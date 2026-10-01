@@ -31,6 +31,7 @@ from Infernux.engine.path_utils import (
 )
 from infernux_mcp import capabilities
 from infernux_mcp import checkpoints as checkpoint_store
+from infernux_mcp.launcher_paths import python_launcher_path
 
 
 VALID_MODES = frozenset({"developer_assist", "global_validation"})
@@ -114,7 +115,7 @@ class SupervisorSession:
         self.build_profile = _require_choice("build_profile", self.build_profile, VALID_BUILD_PROFILES)
         self.recording_enabled = bool(self.recording_enabled and self.build_profile == "debug_feedback")
         self.managed_checkpoints_required = bool(self.managed_checkpoints_required)
-        self.python_executable = resolved_path(self.python_executable)
+        self.python_executable = python_launcher_path(self.python_executable)
         self.mcp_host = _require_loopback_host(self.mcp_host)
         self.mcp_port = _require_port(self.mcp_port)
 
