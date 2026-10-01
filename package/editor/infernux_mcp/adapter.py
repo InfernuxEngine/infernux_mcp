@@ -358,6 +358,11 @@ def _register_gateway_tools(mcp, project_path: str) -> None:
                     "Use operation_batch_execute for ordered groups of known operations instead "
                     "of making one gateway round trip per operation."
                 ),
+                "client_connection": (
+                    "Reuse an initialized MCP client for dependent calls. The Python CLI's "
+                    "session command accepts JSON-lines requests on one connection; --timings "
+                    "reports client startup, connection and request phases to stderr."
+                ),
                 "visual_capture": (
                     "Use Scene, Game, or Player render-target capture for visual validation."
                 ),

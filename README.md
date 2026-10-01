@@ -34,6 +34,21 @@ Start a session with `host_session_status`, then read `operation_schema_list`. S
 }
 ```
 
+## Repeatable client workflows
+
+The Python client now supports `session`: send one JSON object per input line and
+reuse one initialized MCP connection for discovery, dependent edits and status
+checks. `call` also accepts `--args-file path.json` (or `-` for stdin), avoiding
+nested shell quoting. `--timings` writes client phase measurements to stderr;
+stdout remains machine-readable JSON. Operation errors, partial batch failures,
+and failed/cancelled jobs return a nonzero exit status.
+
+See [client workflows and latency diagnostics](package/plugin_pages/operations.md#python-client)
+for the exact protocol, timeout behavior and a read-only benchmark. These source
+changes retain the existing gateway APIs and capability gates; no extra grants
+or automatic retries are introduced. The published package version is unchanged
+until a release is tagged.
+
 ## Compute diagnostics (041)
 
 Search the operation catalog for `runtime.compute`. Read `statistics` for the

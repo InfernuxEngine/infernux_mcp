@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Install client transport dependencies
+        run: python -m pip install -r package/requirements.txt
+      - name: Test standalone client and real HTTP workflows
+        run: python -m unittest discover -s test -p 'test_client*.py' -v
       - name: Validate Python sources and reproducible package output
         run: |
           python -m compileall -q package/editor

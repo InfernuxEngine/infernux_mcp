@@ -34,6 +34,12 @@ Agent 应先调用 `host_session_status`，再读取 `operation_schema_list`。�
 }
 ```
 
+## 可重复的客户端工作流
+
+Python 客户端新增 `session` 模式：每行输入一个 JSON 请求，复用同一个已初始化的 MCP 连接，完成发现、依赖前一步结果的编辑和状态查询。`call` 支持 `--args-file path.json`（`-` 代表标准输入），避免多层 shell 引号。`--timings` 把客户端分阶段耗时写入 stderr，stdout 保持机器可读 JSON。操作失败、批次中部分步骤失败，以及任务失败或取消时，退出码为非零。
+
+[客户端工作流与耗时诊断](package/plugin_pages/operations.zh-CN.md#python-客户端)说明了协议、超时边界和只读基准测试。现有 gateway API、能力白名单与确认要求保持不变，不会自动重试命令。源码改进将在后续打标签发布时进入新安装包，当前发布版本号不变。
+
 ## Compute 性能诊断（041）
 
 在操作目录中搜索 `runtime.compute`。`statistics` 读取引擎已有的上传/回读字节数、派发与提交次数、CPU 等待时间；`reset_statistics` 开始新的计数区间。需要 GPU 时间戳时显式启用 `profiling`，测量完关闭；切换时可能等待在途任务。GPU 耗时只代表最近完成的一次提交，不是整帧耗时；完整帧的百分位仍通过 `runtime.performance` 获取。这些操作需要配套的 041 引擎宿主。
