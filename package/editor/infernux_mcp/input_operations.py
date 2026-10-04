@@ -346,18 +346,28 @@ def _pointer_button(button: int, pressed: bool, x: float, y: float, wait_for_del
 
 
 def _pointer_click(x: float, y: float, button: int = 0, timeout_seconds: float = 3.0):
+    _require_validation()
     px = _finite("x", x)
     py = _finite("y", y)
-    moved = _pointer_move(px, py, timeout_seconds=timeout_seconds)
-    pressed = _pointer_button(button, True, px, py, timeout_seconds=timeout_seconds)
-    try:
-        released = _pointer_button(button, False, px, py, timeout_seconds=timeout_seconds)
-    except Exception:
-        _submit(
-            "pointer_button", button=button, pressed=False, x=px, y=py,
-            wait_for_delivery=False, timeout_seconds=timeout_seconds,
-        )
-        raise
+    if isinstance(button, bool) or int(button) not in range(5):
+        raise OperationError("operation.invalid_arguments", "button must be within [0, 4]")
+    timeout = _finite("timeout_seconds", timeout_seconds)
+    if timeout <= 0:
+        raise OperationError("operation.invalid_arguments", "timeout_seconds must be positive and finite")
+
+    def queue_click():
+        host = EditorAutomationHost.instance()
+        moved = host.queue_input("pointer_move", x=px, y=py, delta_x=0.0, delta_y=0.0)
+        pressed = host.queue_input("pointer_button", button=button, pressed=True, x=px, y=py)
+        released = host.queue_input("pointer_button", button=button, pressed=False, x=px, y=py)
+        return moved, pressed, released
+
+    # One owner-thread callback publishes the entire gesture. The native
+    # drain can then enforce its hover -> press -> release GUI boundaries.
+    # Waiting for individual event delivery split the gesture across batches
+    # and allowed a press before ImGui had established the target hover.
+    moved, pressed, released = on_editor("infernux.input.pointer.click.queue", queue_click)
+    _wait(int(released["sequence"]), timeout_seconds=timeout)
     return {
         "x": px,
         "y": py,
