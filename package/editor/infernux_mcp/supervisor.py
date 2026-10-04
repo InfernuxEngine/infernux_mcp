@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from Infernux.engine.path_utils import (
+from infernux.engine.path_utils import (
     is_path_within,
     path_fingerprint,
     relative_path,
@@ -59,7 +59,7 @@ def _source_gpu_jit_vendor_dir() -> str:
     if configured:
         return configured
     repository_root = Path(__file__).resolve().parents[6]
-    candidate = repository_root / "out" / "build" / "windows-msvc-release" / "gpu-jit-wheel" / "Infernux" / "_compiler" / "taichi" / "_vendor" / "taichi"
+    candidate = repository_root / "out" / "build" / "windows-msvc-release" / "gpu-jit-wheel" / "infernux" / "_compiler" / "taichi" / "_vendor" / "taichi"
     return str(candidate) if (candidate / "__init__.py").is_file() else ""
 
 
@@ -76,7 +76,7 @@ def _source_python_root() -> str:
 
     repository_root = Path(__file__).resolve().parents[6]
     source_root = repository_root / "python"
-    return str(source_root) if (source_root / "Infernux" / "__init__.py").is_file() else ""
+    return str(source_root) if (source_root / "infernux" / "__init__.py").is_file() else ""
 
 
 @dataclass
@@ -184,7 +184,7 @@ class SupervisorSession:
             or os.environ.get("XDG_STATE_HOME", "").strip()
             or os.path.join(os.path.expanduser("~"), ".local", "state")
         )
-        return os.path.join(state_home, "Infernux", "Players", game_name, "Logs")
+        return os.path.join(state_home, "infernux", "Players", game_name, "Logs")
 
     @classmethod
     def resume(
@@ -431,7 +431,7 @@ class SupervisorSession:
         self.mcp_port = _available_port(self.mcp_host, self.mcp_port)
         code = (
             "import sys; "
-            "from Infernux.engine import release_engine; "
+            "from infernux.engine import release_engine; "
             "release_engine(project_path=sys.argv[1])"
         )
         env = os.environ.copy()
@@ -564,7 +564,7 @@ class SupervisorSession:
         repeat: bool = False,
         timeout_seconds: float = 3.0,
     ) -> dict[str, Any]:
-        from Infernux.lib import InputManager
+        from infernux.lib import InputManager
 
         if isinstance(key, bool):
             raise ValueError("key must be a key name or SDL scancode, not a boolean.")
@@ -611,7 +611,7 @@ class SupervisorSession:
         timeout_seconds: float = 3.0,
     ) -> dict[str, Any]:
         """Press and release a Player key with engine-controlled timing."""
-        from Infernux.lib import InputManager
+        from infernux.lib import InputManager
 
         if isinstance(key, bool):
             raise ValueError("key must be a key name or SDL scancode, not a boolean.")

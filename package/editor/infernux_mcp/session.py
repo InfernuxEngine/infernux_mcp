@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from Infernux.engine.path_utils import is_path_within, path_key, portable_path, relative_path, resolved_path
+from infernux.engine.path_utils import is_path_within, path_key, portable_path, relative_path, resolved_path
 from infernux_mcp import checkpoints as checkpoint_store
 from infernux_mcp.session_identity import capture_build_identity
 
@@ -688,7 +688,7 @@ def _check_import(module: str, line: int, violations: list[dict[str, Any]]) -> N
         _violate(violations, "forbidden_import", line, f"Import '{module}' is not allowed in project scripts.")
     if module == "infernux_mcp" or module.startswith("infernux_mcp."):
         _violate(violations, "internal_module", line, f"MCP implementation import '{module}' is not allowed in project scripts.")
-    if module == "Infernux.lib._Infernux" or module.startswith("Infernux.engine._"):
+    if module == "infernux.lib._Infernux" or module.startswith("infernux.engine._"):
         _violate(violations, "internal_module", line, f"Private engine import '{module}' is not allowed in project scripts.")
 
 

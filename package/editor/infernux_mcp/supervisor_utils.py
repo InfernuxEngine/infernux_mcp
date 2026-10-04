@@ -18,14 +18,14 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from Infernux.engine.path_utils import (
+from infernux.engine.path_utils import (
     is_path_within,
     path_fingerprint,
     relative_path,
     resolved_path,
     same_path,
 )
-from Infernux.engine.platform_player_bootstrap import read_player_build_manifest
+from infernux.engine.platform_player_bootstrap import read_player_build_manifest
 
 
 HANDOFF_STATES = frozenset({"idle", "started", "completed", "failed"})
@@ -311,7 +311,7 @@ def _normalize_player_hold_scancodes(
     values = list(hold_keys or ([] if hold_key is None else [hold_key]))
     if len(values) > 8:
         raise ValueError("hold_keys may contain at most 8 keys.")
-    from Infernux.lib import InputManager
+    from infernux.lib import InputManager
 
     scancodes = []
     for value in values:

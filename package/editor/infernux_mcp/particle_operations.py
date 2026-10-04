@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Infernux.host import EditorAutomationHost, Operation, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationKind
 
 from .operation_support import asset_path, on_editor, operation, set_json_pointer
 

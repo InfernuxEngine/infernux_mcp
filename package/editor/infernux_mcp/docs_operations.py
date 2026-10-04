@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Infernux.host import Operation, OperationError, OperationKind, OperationRegistry
+from infernux.host import Operation, OperationError, OperationKind, OperationRegistry
 
 from infernux_mcp.operation_support import operation
 

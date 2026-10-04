@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from Infernux.host import Operation, OperationKind
-from Infernux.host.operation_support import (
+from infernux.host import Operation, OperationKind
+from infernux.host.operation_support import (
     active_scene,
     asset_database,
     asset_identity,

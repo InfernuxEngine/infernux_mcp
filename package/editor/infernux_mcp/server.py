@@ -9,9 +9,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from Infernux.debug import Debug
-from Infernux.engine.path_utils import resolved_path
-from Infernux.runtime_services import (
+from infernux.debug import Debug
+from infernux.engine.path_utils import resolved_path
+from infernux.runtime_services import (
     get_runtime_service,
     install_runtime_service,
     remove_runtime_service,

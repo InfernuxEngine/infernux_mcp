@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 
-from Infernux.lifecycle import InxPreload, PreloadContext
+from infernux.lifecycle import InxPreload, PreloadContext
 
 
 class InfernuxMCPPreload(InxPreload):
@@ -50,7 +50,7 @@ class InfernuxMCPPreload(InxPreload):
                 if not start_server(project_root, host=host, port=port):
                     raise RuntimeError("Infernux MCP server did not start")
             except Exception as exc:
-                from Infernux.debug import Debug
+                from infernux.debug import Debug
 
                 Debug.log_error(f"Infernux MCP server failed to start: {exc}")
 

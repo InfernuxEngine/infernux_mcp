@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from Infernux.host import (
+from infernux.host import (
     EditorAutomationHost,
     Operation,
     OperationError,

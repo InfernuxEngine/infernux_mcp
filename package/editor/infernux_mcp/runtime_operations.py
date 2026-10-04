@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from Infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
 
 from .operation_support import on_editor, operation
 

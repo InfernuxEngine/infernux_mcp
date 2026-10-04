@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, Mapping
 
-from Infernux.host import (
+from infernux.host import (
     OperationError,
     OperationJobRegistry,
     OperationKind,
@@ -46,7 +46,7 @@ def register_gateways(
         _config = dict(config or {})
         registry = OperationRegistry.instance()
         registry.unregister_owner(OWNER)
-        from Infernux.host import install_editor_operations
+        from infernux.host import install_editor_operations
 
         install_editor_operations(project_path, registry)
         from infernux_mcp import capabilities

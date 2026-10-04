@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Infernux.host import EditorAutomationHost, Operation, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationKind
 
 from infernux_mcp.operation_support import on_editor, operation
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from Infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
 
 from infernux_mcp import session
 from infernux_mcp.operation_support import operation

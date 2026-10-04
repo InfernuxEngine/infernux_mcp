@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any
 
-from Infernux.engine.path_utils import relative_path, resolved_path
+from infernux.engine.path_utils import relative_path, resolved_path
 
 _active_trace: dict[str, Any] | None = None
 _last_trace: dict[str, Any] | None = None

@@ -8,7 +8,7 @@ import os
 import tempfile
 from typing import Any
 
-from Infernux.engine.path_utils import resolved_path
+from infernux.engine.path_utils import resolved_path
 
 
 CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")

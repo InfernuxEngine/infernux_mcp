@@ -12,7 +12,7 @@ import time
 from typing import Any
 import uuid
 
-from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path, same_path
+from infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path, same_path
 
 
 CHECKPOINT_ROOTS = ("Assets", "ProjectSettings")

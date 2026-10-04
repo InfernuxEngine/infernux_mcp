@@ -7,7 +7,7 @@ import os
 import re
 import time
 
-from Infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
 
 from infernux_mcp import session
 from infernux_mcp.operation_support import on_editor, operation

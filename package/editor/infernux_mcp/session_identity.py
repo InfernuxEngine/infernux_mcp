@@ -11,7 +11,7 @@ import time
 import tomllib
 from typing import Any
 
-from Infernux.engine.path_utils import relative_path, resolved_path
+from infernux.engine.path_utils import relative_path, resolved_path
 
 
 def capture_build_identity(
