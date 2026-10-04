@@ -170,7 +170,8 @@ def mode_remediation(required_mode: str) -> dict[str, Any]:
         sys.executable,
         "-c",
         (
-            "from infernux_mcp import capabilities; import sys; "
+            "import sys; sys.path.insert(0, sys.argv[3]); "
+            "from infernux_mcp import capabilities; "
             "root, mode = sys.argv[1:3]; "
             "config = capabilities.load_capability_config(root); "
             "config['enabled'] = True; config['profile'] = mode; "
@@ -178,6 +179,7 @@ def mode_remediation(required_mode: str) -> dict[str, Any]:
         ),
         active.project_root,
         required,
+        str(Path(__file__).resolve().parent.parent),
     ]
     result: dict[str, Any] = {
         "active_mode": active.mode,
@@ -195,7 +197,8 @@ def mode_remediation(required_mode: str) -> dict[str, Any]:
                 sys.executable,
                 "-c",
                 (
-                    "from infernux_mcp.supervisor import SupervisorSession; import sys; "
+                    "import sys; sys.path.insert(0, sys.argv[4]); "
+                    "from infernux_mcp.supervisor import SupervisorSession; "
                     "managed = SupervisorSession.resume(sys.argv[1], sys.argv[2]); "
                     "print(managed.switch_mode(sys.argv[3], "
                     "reason='MCP operation requires this mode'))"
@@ -203,6 +206,7 @@ def mode_remediation(required_mode: str) -> dict[str, Any]:
                 active.project_root,
                 active.session_id,
                 required,
+                str(Path(__file__).resolve().parent.parent),
             ],
             "instructions": (
                 "Run supervisor_switch_argv as an argument vector outside this MCP request, "
