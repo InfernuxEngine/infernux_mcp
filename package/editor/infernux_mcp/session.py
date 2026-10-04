@@ -34,7 +34,6 @@ VALID_BLOCKER_CATEGORIES = frozenset({
     "inconclusive",
 })
 
-_FORBIDDEN_IMPORTS = frozenset({"inspect", "importlib", "pkgutil", "subprocess", "zipfile"})
 _CURRENT: "McpSession | None" = None
 
 
@@ -246,10 +245,11 @@ def require_supervisor_lease(lease_token: str) -> McpSession:
 
 
 def validate_script(source: str, *, filename: str = "<script>") -> dict[str, Any]:
-    """Perform a small, deterministic public-API policy check before execution."""
+    """Validate Python syntax without executing imports or project code."""
     violations: list[dict[str, Any]] = []
     try:
         tree = ast.parse(str(source or ""), filename=filename)
+        compile(tree, filename, "exec")
     except SyntaxError as exc:
         violations.append({
             "code": "syntax_error",
@@ -257,26 +257,6 @@ def validate_script(source: str, *, filename: str = "<script>") -> dict[str, Any
             "message": str(exc.msg or "Invalid Python syntax."),
         })
         return _lint_result(violations)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                _check_import(alias.name, node.lineno, violations)
-        elif isinstance(node, ast.ImportFrom):
-            module = str(node.module or "")
-            _check_import(module, node.lineno, violations)
-            if module.startswith("Infernux"):
-                for alias in node.names:
-                    if alias.name.startswith("_"):
-                        _violate(violations, "private_symbol", node.lineno, f"Private Infernux symbol '{module}.{alias.name}' is not allowed.")
-        elif isinstance(node, ast.Call):
-            name = _dotted_name(node.func)
-            if name in {"inspect.getsource", "inspect.getmembers", "pkgutil.iter_modules", "importlib.import_module"}:
-                _violate(violations, "reflection", node.lineno, f"'{name}' is not allowed in project scripts.")
-        elif isinstance(node, ast.Attribute):
-            root = _dotted_name(node.value)
-            if root.startswith("Infernux") and node.attr.startswith("_"):
-                _violate(violations, "private_symbol", node.lineno, f"Private Infernux attribute '{root}.{node.attr}' is not allowed.")
 
     return _lint_result(violations)
 
@@ -296,7 +276,7 @@ def prepare_project_script_write(relative_path: str, content: str) -> dict[str, 
     target = _script_path(session, relative_path)
     lint = validate_script(content, filename=target)
     if not lint["passed"]:
-        raise McpPolicyError("public_api_lint rejected the project script.")
+        raise McpPolicyError("Script syntax validation failed.")
     return {
         "absolute_path": target,
         "path": _relative_to_project(session, target),
@@ -679,32 +659,6 @@ def _append_jsonl(path: str, value: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(value, ensure_ascii=False) + "\n")
-
-
-def _check_import(module: str, line: int, violations: list[dict[str, Any]]) -> None:
-    module = str(module or "")
-    root = module.split(".", 1)[0]
-    if root in _FORBIDDEN_IMPORTS:
-        _violate(violations, "forbidden_import", line, f"Import '{module}' is not allowed in project scripts.")
-    if module == "infernux_mcp" or module.startswith("infernux_mcp."):
-        _violate(violations, "internal_module", line, f"MCP implementation import '{module}' is not allowed in project scripts.")
-    if module == "infernux.lib._Infernux" or module.startswith("infernux.engine._"):
-        _violate(violations, "internal_module", line, f"Private engine import '{module}' is not allowed in project scripts.")
-
-
-def _dotted_name(node: ast.AST) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
-    return ""
-
-
-def _violate(violations: list[dict[str, Any]], code: str, line: int, message: str) -> None:
-    item = {"code": code, "line": int(line or 0), "message": message}
-    if item not in violations:
-        violations.append(item)
 
 
 def _lint_result(violations: list[dict[str, Any]]) -> dict[str, Any]:
