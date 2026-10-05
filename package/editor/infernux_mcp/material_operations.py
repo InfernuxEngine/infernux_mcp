@@ -176,14 +176,14 @@ def _assign_material_slot(
         if index < 0:
             raise OperationError("operation.invalid_arguments", "slot must be non-negative")
         old_guid = str(values[index] or "") if index < len(values) else ""
-        changed = interaction_core().components.set_material_slot(
+        # False means the requested GUID is already assigned. Rejected edits
+        # raise from the authoritative component service instead.
+        interaction_core().components.set_material_slot(
             renderer,
             index,
             old_guid,
             material_guid,
         )
-        if not changed:
-            raise OperationError("material.edit_rejected", "Material slot edit was rejected or unchanged.")
         return {
             "object_id": int(object_id),
             "component_id": int(component_id),
