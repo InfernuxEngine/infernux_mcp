@@ -14,25 +14,6 @@ from .operation_support import (
 )
 
 
-# JSON field names and the native render-state authorship groups they edit.
-_RENDER_STATE_OVERRIDES = {
-    "cullMode": "CULL_MODE",
-    "depthWriteEnable": "DEPTH_WRITE",
-    "depthTestEnable": "DEPTH_TEST",
-    "depthCompareOp": "DEPTH_COMPARE_OP",
-    "blendEnable": "BLEND_ENABLE",
-    "srcColorBlendFactor": "BLEND_MODE",
-    "dstColorBlendFactor": "BLEND_MODE",
-    "colorBlendOp": "BLEND_MODE",
-    "srcAlphaBlendFactor": "BLEND_MODE",
-    "dstAlphaBlendFactor": "BLEND_MODE",
-    "alphaBlendOp": "BLEND_MODE",
-    "renderQueue": "RENDER_QUEUE",
-    "alphaClipEnabled": "ALPHA_CLIP",
-    "alphaClipThreshold": "ALPHA_CLIP",
-}
-
-
 def build_material_operations() -> tuple[Operation, ...]:
     return (
         operation(
@@ -166,21 +147,9 @@ def _set_material_property(asset_guid: str, pointer: str, value) -> dict[str, ob
     def edit():
         path, _material, before = _load_material(asset_guid)
         after = set_json_pointer(before, pointer, value)
-        if pointer == "/renderState" or pointer.startswith("/renderState/"):
-            from infernux.lib import RenderStateOverride
-
-            if pointer == "/renderState":
-                override_names = set(_RENDER_STATE_OVERRIDES.values()) | {"SURFACE_TYPE"}
-            else:
-                override = _RENDER_STATE_OVERRIDES.get(pointer.removeprefix("/renderState/"))
-                override_names = {override} if override is not None else set()
-            if override_names:
-                overrides = int(after.get("renderStateOverrides", 0))
-                for name in override_names:
-                    overrides |= int(getattr(RenderStateOverride, name))
-                # Explicitly setting even the current default claims that
-                # field. Repeating the assignment keeps the same mask.
-                after["renderStateOverrides"] = overrides
+        after = EditorAutomationHost.instance().prepare_material_document_edit(
+            after, property_pointer=pointer,
+        )
         EditorAutomationHost.instance().publish_material_document(
             path,
             asset_guid,
