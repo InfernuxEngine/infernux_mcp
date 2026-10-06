@@ -455,6 +455,8 @@ def _reject_link(path: str, project_root: str) -> None:
 
 
 def _ignore_file(filename: str, relative: str) -> bool:
+    if portable_path(relative).casefold().startswith("projectsettings/.infernux-engine-lock."):
+        return True
     if filename in _IGNORED_FILE_NAMES:
         return True
     if portable_path(relative).lower() in _IGNORED_PROJECT_PATHS:
