@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import threading
 import time
+from functools import wraps
 from typing import Any, Mapping
+from infernux.host.commands import CommandOwner, command_owner_scope
 
 from infernux.host import (
     OperationError,
@@ -29,6 +31,7 @@ _registration_ms = 0.0
 _full_schema_bytes = 0
 _compact_schema_bytes = 0
 _config: dict[str, Any] = {}
+_command_owner: CommandOwner | None = None
 
 
 def register_gateways(
@@ -38,11 +41,12 @@ def register_gateways(
 ) -> dict[str, object]:
     """Register engine capabilities as operations and expose <=32 gateways."""
 
-    global _registry, _jobs, _started_at, _config
+    global _registry, _jobs, _started_at, _config, _command_owner
     global _registration_ms, _full_schema_bytes, _compact_schema_bytes
     with _state_lock:
         registration_started = time.perf_counter()
         shutdown_adapter()
+        _command_owner = CommandOwner(OWNER)
         _config = dict(config or {})
         registry = OperationRegistry.instance()
         registry.unregister_owner(OWNER)
@@ -83,7 +87,7 @@ def register_gateways(
                 separators=(",", ":"),
             ).encode("utf-8")
         )
-        _register_gateway_tools(mcp, project_path)
+        _register_gateway_tools(mcp, project_path, _command_owner)
         if len(_gateway_names) > MAX_GATEWAY_TOOLS:
             raise RuntimeError(
                 f"Default MCP gateway exceeds {MAX_GATEWAY_TOOLS} tools: "
@@ -93,10 +97,18 @@ def register_gateways(
         return adapter_status()
 
 
+def begin_shutdown_adapter() -> None:
+    """Reject this generation's queued commands before transport drain."""
+    with _state_lock:
+        if _command_owner is not None:
+            _command_owner.close()
+
+
 def shutdown_adapter() -> None:
     global _registry, _jobs, _started_at
     global _registration_ms, _full_schema_bytes, _compact_schema_bytes
     with _state_lock:
+        begin_shutdown_adapter()
         if _jobs is not None:
             remaining = _jobs.shutdown(
                 wait=True, cancel_futures=True, timeout=5.0
@@ -134,12 +146,18 @@ def adapter_status() -> dict[str, object]:
     }
 
 
-def _register_gateway_tools(mcp, project_path: str) -> None:
+def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner) -> None:
     _gateway_names.clear()
 
     def gateway(name: str):
         _gateway_names.add(name)
-        return mcp.tool(name=name)
+        def decorate(fn):
+            @wraps(fn)
+            def invoke(*args, **kwargs):
+                with command_owner_scope(command_owner):
+                    return fn(*args, **kwargs)
+            return mcp.tool(name=name)(invoke)
+        return decorate
 
     @gateway("mcp_ping")
     def mcp_ping() -> dict[str, object]:

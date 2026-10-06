@@ -33,6 +33,7 @@ class _ServerState:
     mcp: object
     transport: object
     adapter_shutdown: object
+    adapter_begin_shutdown: object = None
     thread: Optional[threading.Thread] = None
     error: BaseException | None = None
     stop_requested: threading.Event = field(default_factory=threading.Event)
@@ -162,13 +163,27 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
                 }
             )
 
-        from infernux_mcp.adapter import register_gateways, shutdown_adapter
+        from infernux_mcp.adapter import begin_shutdown_adapter, register_gateways, shutdown_adapter
         register_gateways(mcp, project_path, capability_config)
 
         import uvicorn
 
         app = mcp.streamable_http_app()
-        transport = uvicorn.Server(
+        endpoint = next(route.endpoint for route in app.routes if route.path == PATH)
+
+        class SessionAwareServer(uvicorn.Server):
+            async def _wait_tasks_to_complete(self) -> None:
+                # Uvicorn has stopped accepting requests at this point, but
+                # an MCP GET stream remains open until its session terminates.
+                # Waiting for it before app lifespan shutdown is circular:
+                # FastMCP normally terminates these sessions in that lifespan.
+                # Use the same SDK transport termination as FastMCP's lifespan,
+                # while the session manager and its task group are still alive.
+                for session in tuple(endpoint.session_manager._server_instances.values()):
+                    await session.terminate()
+                await super()._wait_tasks_to_complete()
+
+        transport = SessionAwareServer(
             uvicorn.Config(
                 app,
                 host=str(host),
@@ -188,6 +203,7 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             mcp=mcp,
             transport=transport,
             adapter_shutdown=shutdown_adapter,
+            adapter_begin_shutdown=begin_shutdown_adapter,
         )
 
         def _run() -> None:
@@ -250,6 +266,8 @@ def _stop_state(state: _ServerState) -> None:
 
 def _request_stop_state(state: _ServerState) -> None:
     state.stop_requested.set()
+    if state.adapter_begin_shutdown is not None:
+        state.adapter_begin_shutdown()
     state.transport.should_exit = True
     with state.cleanup_lock:
         if state.reaper_started.is_set():
