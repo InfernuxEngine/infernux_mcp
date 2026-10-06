@@ -95,7 +95,16 @@ def build_operations(project_path: str) -> tuple[Operation, ...]:
             "Persist a trace-backed validation blocker report.",
             lambda report: session.write_blocker(report),
             capability="session.write",
-            input_properties={"report": {"type": "object"}},
+            input_properties={"report": {
+                "type": "object",
+                "properties": {
+                    "report_id": {
+                        "type": "string",
+                        "pattern": session.BLOCKER_REPORT_ID_PATTERN,
+                        "description": session.blocker_report_contract()["optional_arguments"]["report_id"],
+                    },
+                },
+            }},
             required=("report",),
             side_effects=("Writes a blocker report into the session artifact directory.",),
             tags=("session", "validation", "blocker", "report"),

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 import uuid
@@ -33,6 +34,15 @@ VALID_BLOCKER_CATEGORIES = frozenset({
     "policy_violation",
     "inconclusive",
 })
+
+# This is also the advertised JSON Schema pattern. IDs are portable filenames,
+# including on Windows; the negative end assertion excludes a trailing newline.
+BLOCKER_REPORT_ID_PATTERN = (
+    r"^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|"
+    r"[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?![\s\S]))"
+    r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}(?![\s\S])"
+)
+_BLOCKER_REPORT_ID = re.compile(BLOCKER_REPORT_ID_PATTERN)
 
 _CURRENT: "McpSession | None" = None
 
@@ -355,13 +365,28 @@ def write_blocker(payload: dict[str, Any]) -> dict[str, Any]:
         "trace_id": session.last_trace_id,
         "reported_at": time.time(),
     })
-    report_id = str(data.get("report_id", "") or f"blocker-{int(time.time())}-{uuid.uuid4().hex[:8]}")
+    report_id = data["report_id"] if "report_id" in data else f"blocker-{uuid.uuid4().hex}"
+    if not isinstance(report_id, str) or not _BLOCKER_REPORT_ID.fullmatch(report_id):
+        raise McpPolicyError(
+            "report_id must be 1-96 ASCII letters, digits, '_' or '-', start with a letter "
+            "or digit, and must not be a Windows device name. Omit it to generate an ID."
+        )
+    data["report_id"] = report_id
     report_dir = os.path.join(session.artifact_root, "reports")
     path = os.path.join(report_dir, f"{report_id}.json")
+    if not is_path_within(report_dir, session.artifact_root, allow_root=False) or not is_path_within(
+        path, report_dir, allow_root=False
+    ):
+        raise McpPolicyError("Blocker report path must stay inside the session reports directory.")
+    # Serialize before creating a file, then reserve this ID exclusively. Existing
+    # reports (including file links) are never truncated or used as write targets.
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     os.makedirs(report_dir, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    try:
+        with open(path, "x", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    except FileExistsError as exc:
+        raise McpPolicyError(f"Blocker report_id {report_id!r} already exists.") from exc
     return {"report_id": report_id, "path": path, "report": data}
 
 
@@ -384,6 +409,11 @@ def blocker_report_contract() -> dict[str, Any]:
             "persistence_proof": "State whether the result repeats after returning to the checkpoint.",
         },
         "optional_arguments": {
+            "report_id": (
+                "Unique portable identifier: 1-96 ASCII letters, digits, '_' or '-', starting "
+                "with a letter or digit; Windows device names are forbidden. Omit to generate "
+                "an ID. Existing reports cannot be overwritten."
+            ),
             "severity": "low, medium, high, or critical; defaults to medium.",
             "notes": "Concise additional triage context.",
         },
