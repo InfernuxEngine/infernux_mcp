@@ -378,7 +378,6 @@ class SupervisorSession:
         os.makedirs(self.artifact_root, exist_ok=True)
 
         config = capabilities.load_capability_config(self.project_root)
-        config["enabled"] = True
         config["profile"] = self.mode
         policy = config.setdefault("session", {})
         policy.update({

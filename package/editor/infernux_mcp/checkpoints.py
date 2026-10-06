@@ -19,7 +19,10 @@ CHECKPOINT_ROOTS = ("Assets", "ProjectSettings")
 _CHECKPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _IGNORED_DIRECTORY_NAMES = frozenset({"__pycache__"})
 _IGNORED_FILE_NAMES = frozenset({".infernux-engine-lock.json", "mcp_capabilities.json", ".DS_Store"})
-_PRESERVED_PROJECT_PATHS = ("ProjectSettings/EditorSettings.json",)
+_PRESERVED_PROJECT_PATHS = (
+    "ProjectSettings/EditorSettings.json",
+    "ProjectSettings/mcp_capabilities.json",
+)
 _IGNORED_PROJECT_PATHS = frozenset(path.lower() for path in _PRESERVED_PROJECT_PATHS)
 
 
@@ -167,6 +170,9 @@ def load_checkpoint(
     ledger = manifest.get("ledger")
     if not isinstance(ledger, dict) or not isinstance(ledger.get("entries"), list):
         raise CheckpointError("Checkpoint manifest has no valid project ledger.")
+    for relative in _ledger_paths(ledger):
+        if relative.lower() in _IGNORED_PROJECT_PATHS:
+            raise CheckpointError(f"Checkpoint cannot restore a local project setting: {relative}")
     payload_path = os.path.join(directory, str(manifest.get("payload_root", "payload") or "payload"))
     if verify_payload:
         payload_ledger = _capture_project_ledger(payload_path)
@@ -274,7 +280,6 @@ def restore_checkpoint(
         verify_payload=True,
     )
     expected = checkpoint["ledger"]
-    recorded_paths = _ledger_paths(expected)
     before = capture_project_ledger(project)
     journal = os.path.join(
         resolved_path(artifact_root),
@@ -285,7 +290,7 @@ def restore_checkpoint(
     backup_root = os.path.join(journal, "backup")
     os.makedirs(backup_root, exist_ok=True)
     _copy_ledger_files(checkpoint["payload_path"], staged_root, expected)
-    _copy_preserved_project_files(project, staged_root, recorded_paths=recorded_paths)
+    _copy_preserved_project_files(project, staged_root)
 
     replaced: list[tuple[str, bool]] = []
     try:
@@ -396,13 +401,8 @@ def _copy_ledger_files(source_root: str, destination_root: str, ledger: dict[str
 def _copy_preserved_project_files(
     source_root: str,
     destination_root: str,
-    *,
-    recorded_paths: set[str],
 ) -> None:
-    recorded = {portable_path(path).lower() for path in recorded_paths}
     for relative in _PRESERVED_PROJECT_PATHS:
-        if relative.lower() in recorded:
-            continue
         source_path = _safe_relative_path(source_root, relative)
         if not os.path.exists(source_path):
             continue
