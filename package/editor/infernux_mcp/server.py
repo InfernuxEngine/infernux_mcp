@@ -277,7 +277,7 @@ def _reap_state(state: _ServerState) -> None:
     except BaseException as exc:
         state.error = exc
         Debug.log_error(f"Infernux MCP transport retirement failed: {exc}")
-    finally:
+    else:
         state.stopped.set()
 
 
