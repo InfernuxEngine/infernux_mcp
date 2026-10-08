@@ -1,0 +1,7 @@
+# The same plugin version must export identical source bytes on every host.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.inxpkg binary
+*.zip binary
