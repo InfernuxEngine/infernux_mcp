@@ -4,16 +4,103 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
+from dataclasses import dataclass
+import threading
 import time
 import uuid
 from typing import Any
 
 from infernux.engine.path_utils import relative_path, resolved_path
+from infernux.host.operations import OperationError
+from infernux_mcp.capabilities import feature_enabled
 
 _active_trace: dict[str, Any] | None = None
 _last_trace: dict[str, Any] | None = None
 _session_project_path = ""
 _session_log_path = ""
+_lock = threading.RLock()
+_pending: set[OperationTrace] = set()
+_CONTROL_OPERATIONS = frozenset({"infernux.mcp.attempt.start", "infernux.mcp.attempt.stop"})
+
+
+@dataclass(eq=False, slots=True)
+class OperationTrace:
+    operation: str
+    arguments: dict[str, Any]
+    trace: dict[str, Any] | None
+    step: dict[str, Any] | None
+    session_path: str
+    started: float
+    control: bool = False
+    finished: bool = False
+
+
+def begin_operation(operation: str, *, arguments: dict[str, Any]) -> OperationTrace:
+    """Reserve the originating attempt before a call can enter a worker queue."""
+    with _lock:
+        control = operation in _CONTROL_OPERATIONS
+        target = None if control else _active_trace
+        step = None
+        if target is not None and feature_enabled("trace_recorder"):
+            step = {"index": len(target["steps"]), "operation": str(operation), "status": "pending"}
+            target["steps"].append(step)
+        ticket = OperationTrace(
+            str(operation), deepcopy(arguments), target, step,
+            _session_log_path if _session_log_enabled() else "", time.perf_counter(), control,
+        )
+        if target is not None:
+            _pending.add(ticket)
+        return ticket
+
+
+def _secret_values(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        result = []
+        for key, item in value.items():
+            if any(marker in str(key).casefold() for marker in ("token", "secret", "password", "lease")):
+                if isinstance(item, str) and item:
+                    result.append(item)
+            else:
+                result.extend(_secret_values(item))
+        return result
+    if isinstance(value, (list, tuple)):
+        return [secret for item in value for secret in _secret_values(item)]
+    return []
+
+
+def finish_operation(ticket: OperationTrace, *, ok: bool, result: Any = None,
+                     error: str = "", elapsed_ms: float | None = None, cancelled: bool = False) -> None:
+    with _lock:
+        if ticket.finished:
+            return
+        ticket.finished = True
+        _pending.discard(ticket)
+        if elapsed_ms is None:
+            elapsed_ms = (time.perf_counter() - ticket.started) * 1000.0
+        for secret in sorted(_secret_values(ticket.arguments), key=len, reverse=True):
+            error = error.replace(secret, "<redacted>")
+        step = ticket.step
+        # Start creates the attempt during execution; Stop saves it before return.
+        # These control operations must not count as outstanding work themselves.
+        if ticket.control and _active_trace is not None and feature_enabled("trace_recorder"):
+            step = {"index": len(_active_trace["steps"]), "operation": ticket.operation}
+            _active_trace["steps"].append(step)
+        if step is not None:
+            step.update(ok=bool(ok), elapsed_ms=round(float(elapsed_ms), 3))
+            step.pop("status", None)
+            if cancelled:
+                step["status"] = "cancelled"
+            if ticket.arguments:
+                step["arguments"] = _jsonable_summary(ticket.arguments)
+            if result is not None:
+                step["result"] = _jsonable_summary(result, max_string=_trace_result_max_string(), limit_name="trace_result_max_string")
+            if error:
+                step["error"] = str(error)
+        if ticket.session_path:
+            _record_session_operation(ticket.operation, ok=ok, elapsed_ms=elapsed_ms,
+                arguments=ticket.arguments, result=result, error=error, path=ticket.session_path,
+                status="cancelled" if cancelled else "")
 def set_session_project_path(project_path: str) -> dict[str, Any]:
     """Bind trace output to a project without creating a log file yet."""
     global _session_project_path, _session_log_path
@@ -78,38 +165,47 @@ def start_trace(
 ) -> dict[str, Any]:
     """Start a trace, optionally attaching immutable attempt/session context."""
     global _active_trace
-    _active_trace = {
-        "trace_id": f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
-        "task": str(task or ""),
-        "started_at": time.time(),
-        "steps": [],
-    }
-    if context:
-        _active_trace["context"] = _jsonable_summary(context)
-    return current_trace()
+    with _lock:
+        if _active_trace is not None:
+            raise OperationError("trace.already_active", "Stop the active trace before starting another")
+        _active_trace = {
+            "trace_id": f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+            "task": str(task or ""),
+            "started_at": time.time(),
+            "steps": [],
+        }
+        if context:
+            _active_trace["context"] = _jsonable_summary(context)
+        return current_trace()
 
 
 def stop_trace(project_path: str, save: bool = True) -> dict[str, Any]:
     global _active_trace, _last_trace
-    if _active_trace is None:
-        return {"active": False, "trace": None, "saved_path": ""}
-    trace = dict(_active_trace)
-    trace["ended_at"] = time.time()
-    trace["elapsed_seconds"] = max(0.0, trace["ended_at"] - float(trace.get("started_at", trace["ended_at"])))
-    saved_path = ""
-    if save:
-        saved_path = _save_trace(project_path, trace)
-    _last_trace = trace
-    _active_trace = None
-    return {"active": False, "trace": trace, "saved_path": saved_path}
+    with _lock:
+        if _active_trace is None:
+            return {"active": False, "trace": None, "saved_path": ""}
+        pending = sum(ticket.trace is _active_trace for ticket in _pending)
+        if pending:
+            raise OperationError("trace.pending_operations",
+                f"Wait for or cancel {pending} outstanding operation(s) before stopping this trace",
+                details={"pending_operations": pending})
+        trace = deepcopy(_active_trace)
+        trace["ended_at"] = time.time()
+        trace["elapsed_seconds"] = max(0.0, trace["ended_at"] - float(trace.get("started_at", trace["ended_at"])))
+        saved_path = _save_trace(project_path, trace) if save else ""
+        _last_trace = trace
+        _active_trace = None
+        return {"active": False, "trace": deepcopy(trace), "saved_path": saved_path}
 
 
 def current_trace() -> dict[str, Any]:
-    return {"active": _active_trace is not None, "trace": _active_trace}
+    with _lock:
+        return {"active": _active_trace is not None, "trace": deepcopy(_active_trace)}
 
 
 def last_trace() -> dict[str, Any]:
-    return {"trace": _last_trace}
+    with _lock:
+        return {"trace": deepcopy(_last_trace)}
 
 
 def record_operation(
@@ -121,47 +217,8 @@ def record_operation(
     result: Any = None,
     error: str = "",
 ) -> None:
-    if _active_trace is None:
-        _record_session_operation(
-            operation,
-            ok=ok,
-            elapsed_ms=elapsed_ms,
-            arguments=arguments,
-            result=result,
-            error=error,
-        )
-        return
-    try:
-        from infernux_mcp.capabilities import feature_enabled
-        if not feature_enabled("trace_recorder"):
-            return
-    except Exception:
-        pass
-    step = {
-        "index": len(_active_trace["steps"]),
-        "operation": str(operation),
-        "ok": bool(ok),
-        "elapsed_ms": round(float(elapsed_ms), 3),
-    }
-    if arguments:
-        step["arguments"] = _jsonable_summary(arguments)
-    if result is not None:
-        step["result"] = _jsonable_summary(
-            result,
-            max_string=_trace_result_max_string(),
-            limit_name="trace_result_max_string",
-        )
-    if error:
-        step["error"] = str(error)
-    _active_trace["steps"].append(step)
-    _record_session_operation(
-        operation,
-        ok=ok,
-        elapsed_ms=elapsed_ms,
-        arguments=arguments,
-        result=result,
-        error=error,
-    )
+    ticket = begin_operation(operation, arguments=dict(arguments or {}))
+    finish_operation(ticket, ok=ok, elapsed_ms=elapsed_ms, result=result, error=error)
 
 
 def list_traces(project_path: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -212,10 +269,9 @@ def _record_session_operation(
     arguments: dict[str, Any] | None = None,
     result: Any = None,
     error: str = "",
+    path: str = "",
+    status: str = "",
 ) -> None:
-    if not _session_log_enabled():
-        return
-    path = _session_log_path or _session_log_file(_session_project_path)
     if not path:
         return
     try:
@@ -237,6 +293,8 @@ def _record_session_operation(
             )
         if error:
             entry["error"] = str(error)
+        if status:
+            entry["status"] = status
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:

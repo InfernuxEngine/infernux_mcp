@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from functools import wraps
+from functools import partial
 from typing import Any, Mapping
 from infernux.host.commands import CommandOwner, command_owner_scope
 
@@ -268,6 +269,7 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
                             normalized,
                             capabilities=_granted_capabilities(),
                             stop_on_error=bool(stop_on_error),
+                            execute=_invoke_operation,
                         )
                     )
                 }
@@ -281,14 +283,22 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
     ) -> dict[str, object]:
         """Submit a potentially long operation to the bounded Host job pool."""
 
+        from infernux_mcp.trace import begin_operation, finish_operation
+
+        ticket = begin_operation(operation, arguments=dict(arguments or {}))
         try:
             job_id = _require_jobs().submit(
                 operation,
                 arguments,
                 capabilities=_granted_capabilities(),
+                execute=partial(_invoke_operation, ticket=ticket),
+                on_done=lambda future: finish_operation(
+                    ticket, ok=False, error="Job cancelled before execution", cancelled=True,
+                ) if future.cancelled() else None,
             )
             return _ok({"job_id": job_id})
         except OperationError as exc:
+            finish_operation(ticket, ok=False, error=str(exc))
             return _error(exc)
 
     @gateway("operation_job_status")
@@ -409,37 +419,35 @@ def _execute(
     *,
     expected_kind: OperationKind | None = None,
 ) -> dict[str, object]:
-    started = time.perf_counter()
     try:
-        value = _require_registry().execute(
+        value = _invoke_operation(
             operation,
             arguments,
             capabilities=_granted_capabilities(),
             expected_kind=expected_kind,
         )
-        from infernux_mcp.trace import record_operation
-
-        record_operation(
-            operation,
-            ok=True,
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-            arguments=dict(arguments or {}),
-            result=value,
-        )
         return _ok({"operation": operation, "result": value})
     except OperationError as exc:
-        from infernux_mcp.trace import record_operation
-
-        record_operation(
-            operation,
-            ok=False,
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-            arguments=dict(arguments or {}),
-            error=str(exc),
-        )
         if exc.code == "operation.permission_denied":
             return _error(_with_grant_remediation(exc))
         return _error(exc)
+
+
+def _invoke_operation(operation, arguments=None, *, capabilities=(), expected_kind=None, ticket=None):
+    """One execution/recording boundary for direct, ordered and asynchronous calls."""
+    from infernux_mcp.trace import begin_operation, finish_operation
+
+    if ticket is None:
+        ticket = begin_operation(operation, arguments=dict(arguments or {}))
+    try:
+        value = _require_registry().execute(
+            operation, arguments, capabilities=capabilities, expected_kind=expected_kind,
+        )
+    except BaseException as exc:
+        finish_operation(ticket, ok=False, error=str(exc))
+        raise
+    finish_operation(ticket, ok=True, result=value)
+    return value
 
 
 def _with_grant_remediation(exc: OperationError) -> OperationError:
