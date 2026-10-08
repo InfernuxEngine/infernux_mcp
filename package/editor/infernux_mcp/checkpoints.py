@@ -13,6 +13,7 @@ from typing import Any
 import uuid
 
 from infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path, same_path
+from infernux.engine.filesystem import replace_path
 
 
 CHECKPOINT_ROOTS = ("Assets", "ProjectSettings")
@@ -132,7 +133,7 @@ def create_checkpoint(
             "metadata": dict(metadata or {}),
         }
         _write_json(os.path.join(temporary, "manifest.json"), manifest)
-        os.replace(temporary, destination)
+        replace_path(temporary, destination)
         return manifest | {
             "manifest_path": os.path.join(destination, "manifest.json"),
             "payload_path": os.path.join(destination, "payload"),
@@ -443,7 +444,7 @@ def _safe_relative_path(root: str, relative: str) -> str:
 
 
 def _replace_root(source: str, destination: str) -> None:
-    os.replace(source, destination)
+    replace_path(source, destination)
 
 
 def _reject_link(path: str, project_root: str) -> None:
@@ -526,7 +527,7 @@ def _write_json(path: str, value: dict[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        replace_path(temporary, path)
     except Exception:
         try:
             os.remove(temporary)

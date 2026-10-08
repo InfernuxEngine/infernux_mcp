@@ -39,7 +39,7 @@ class OperationTrace:
 def begin_operation(operation: str, *, arguments: dict[str, Any]) -> OperationTrace:
     """Reserve the originating attempt before a call can enter a worker queue."""
     with _lock:
-        control = operation in _CONTROL_OPERATIONS
+        control = operation.casefold() in _CONTROL_OPERATIONS
         target = None if control else _active_trace
         step = None
         if target is not None and feature_enabled("trace_recorder"):
