@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
+from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind, resolve_project_path
 
 from infernux_mcp import session
 from infernux_mcp.operation_support import operation
@@ -295,7 +295,7 @@ def _configured_executable(project_path: str) -> str:
             settings = json.load(stream)
     except (OSError, json.JSONDecodeError) as exc:
         raise OperationError("player.build_settings", f"Build Settings could not be read: {settings_path}") from exc
-    output_dir = os.path.abspath(str(settings.get("output_dir", "") or ""))
+    output_dir = resolve_project_path(str(settings.get("output_dir", "") or "").strip(), project_path)
     game_name = str(settings.get("game_name", "") or "").strip()
     if not output_dir or not game_name:
         raise OperationError("player.build_settings", "Build Settings must define output_dir and game_name.")
@@ -303,7 +303,7 @@ def _configured_executable(project_path: str) -> str:
 
 
 def _launch(project_path: str, executable_path: str, start_scene: str, timeout_seconds: float):
-    executable = os.path.abspath(executable_path) if executable_path else _configured_executable(project_path)
+    executable = resolve_project_path(executable_path, project_path) if executable_path else _configured_executable(project_path)
     result = _supervisor().launch_player(executable, start_scene=start_scene, wait_for_ready=True, timeout_seconds=timeout_seconds)
     if not bool(result.get("player_ready")):
         raise OperationError("player.startup", str(result.get("ready_error", "Player did not become ready.")), details=result)
