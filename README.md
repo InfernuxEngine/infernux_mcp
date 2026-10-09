@@ -2,7 +2,7 @@
 
 The official Model Context Protocol plugin for [Infernux](https://github.com/ChenlizheMe/Infernux). It gives AI coding agents a structured way to inspect an Infernux project, edit scenes and components, run the game, send input, and validate rendered results inside the Editor.
 
-[简体中文](README.zh-CN.md) · [Infernux Engine](https://github.com/ChenlizheMe/Infernux) · [Plugin Template](https://github.com/ChenlizheMe/infernux_plugin_template) · [Releases](https://github.com/ChenlizheMe/infernux_mcp/releases)
+[简体中文](README.zh-CN.md) · [Infernux Engine](https://github.com/ChenlizheMe/Infernux) · [Plugin Template](https://github.com/InfernuxEngine/infernux_plugin_template) · [Releases](https://github.com/InfernuxEngine/infernux_mcp/releases)
 
 ![How Infernux MCP connects an AI agent to the Editor](package/plugin_pages/media/system_overview.png)
 

@@ -2,7 +2,7 @@
 
 这是 [Infernux](https://github.com/ChenlizheMe/Infernux) 游戏引擎的官方 MCP 插件。它让 AI 编程 Agent 能通过稳定、可发现的接口查看项目、修改场景、运行游戏、注入输入，并直接读取编辑器和 Player 的实际渲染结果。
 
-[English](README.md) · [Infernux 引擎](https://github.com/ChenlizheMe/Infernux) · [插件模板](https://github.com/ChenlizheMe/infernux_plugin_template) · [发布制品](https://github.com/ChenlizheMe/infernux_mcp/releases)
+[English](README.md) · [Infernux 引擎](https://github.com/ChenlizheMe/Infernux) · [插件模板](https://github.com/InfernuxEngine/infernux_plugin_template) · [发布制品](https://github.com/InfernuxEngine/infernux_mcp/releases)
 
 ![Infernux MCP 如何连接 AI Agent 与编辑器](package/plugin_pages/media/system_overview.png)
 
