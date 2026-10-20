@@ -19,9 +19,9 @@
 
 ## Python 客户端
 
-编辑器会把它拥有的 `infernux-editor` 配置重新生成为标准 stdio 代理配置。有效 JSON 中的其他服务器和设置会保留，旧的本插件 HTTP 配置会被替换。JSONC、损坏 JSON 或非对象文档不会被覆盖，Console 会报告问题，其他客户端文件仍会更新；这类文件可按 `connection_info()["clients"]` 中的对应配置手动合入。已使用旧 HTTP 配置的客户端需要重启；现有 stdio 代理每次读取当前凭据，编辑器在同端口重启后仍可继续使用。
+编辑器会把它拥有的 `infernux-editor` 配置重新生成为直连 `http://127.0.0.1:9713/mcp` 的 streamable-HTTP 配置。有效 JSON 中的其他服务器和设置会保留。JSONC、损坏 JSON 或非对象文档不会被覆盖，Console 会报告问题，其他客户端文件仍会更新；这类文件可按 `connection_info()["clients"]` 中的对应配置手动合入。
 
-服务只监听本机，并要求 bearer 认证。Python 客户端会从当前用户的私有状态目录读取凭据，不需要项目文件保存凭据。不要把凭据放进客户端 JSON、Git、进程参数或环境变量。带浏览器 Origin 的请求会被拒绝；`/health` 只报告就绪状态，不能用于 MCP 调用。
+服务只监听本机，不需要凭据。`/health` 只报告就绪状态，不能用于 MCP 调用。
 
 使用编辑器的同一个 Python 环境。在插件源码目录中，把 `package/editor` 加到 `PYTHONPATH`，保留原有条目；Bash 示例：`export PYTHONPATH="$PWD/package/editor${PYTHONPATH:+:$PYTHONPATH}"`。项目中已安装的插件对应路径为 `Packages/infernux/mcp/editor`。
 

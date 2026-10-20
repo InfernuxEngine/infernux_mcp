@@ -23,7 +23,7 @@ The official Model Context Protocol plugin for [Infernux](https://github.com/Che
 
 New Infernux projects include this official plugin by default. Existing projects can install or update it from the Editor's **Plugins** window. You can disable or uninstall it there when agent access is not needed.
 
-The Editor writes standard stdio client configurations for Cursor, Claude Code, VS Code, Trae and Gemini. Their small proxy forwards to `http://127.0.0.1:9713/mcp` and reads the current user's private credential for every request, including after an Editor restart. It does not initialize the engine. Direct HTTP clients must send a bearer credential; the built-in Python client handles this automatically. No credential is stored in project files, process arguments, or environment variables. Set `INFERNUX_MCP_PORT` before starting the Editor to choose another loopback port.
+Point an MCP-compatible client to `http://127.0.0.1:9713/mcp`; no credential is needed. The Editor also writes ready-to-use client configurations for Cursor, Claude Code, VS Code, Trae and Gemini. The server accepts localhost connections only, and all capabilities are granted by default (narrow them in `ProjectSettings/mcp_capabilities.json`). Set `INFERNUX_MCP_PORT` before starting the Editor to choose another loopback port.
 
 Start a session with `host_session_status`, then read `operation_schema_list`. Search the catalog with `operation_schema_search`, inspect the exact schema you need, and call it through `operation_command_execute`. Long-running builds belong in `operation_job_submit`; known ordered calls can be grouped with `operation_batch_execute`.
 

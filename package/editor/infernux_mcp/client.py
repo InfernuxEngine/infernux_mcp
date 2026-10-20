@@ -33,15 +33,6 @@ def create_loopback_client(endpoint: str, *, timeout_seconds: float | None = Non
     import httpx
     from fastmcp import Client
     from fastmcp.client.transports.http import StreamableHttpTransport
-    if __package__:
-        from .credentials import load_token
-    else:
-        from credentials import load_token
-
-    class EditorCredentialAuth(httpx.Auth):
-        async def async_auth_flow(self, request):
-            request.headers["Authorization"] = f"Bearer {load_token(endpoint)}"
-            yield request
 
     def http_client_factory(headers=None, auth=None, follow_redirects=True, timeout=None):
         return httpx.AsyncClient(
@@ -52,10 +43,7 @@ def create_loopback_client(endpoint: str, *, timeout_seconds: float | None = Non
             trust_env=False,
         )
 
-    transport = StreamableHttpTransport(
-        str(endpoint), auth=EditorCredentialAuth(),
-        httpx_client_factory=http_client_factory,
-    )
+    transport = StreamableHttpTransport(str(endpoint), httpx_client_factory=http_client_factory)
     return Client(transport, timeout=timeout_seconds, init_timeout=timeout_seconds)
 
 

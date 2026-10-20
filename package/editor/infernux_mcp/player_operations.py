@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind, resolve_project_path
 
@@ -13,6 +14,7 @@ from infernux_mcp.supervisor import SupervisorSession
 
 
 _LOCAL_SUPERVISORS: dict[tuple[str, str], SupervisorSession] = {}
+_LOCAL_SUPERVISORS_LOCK = threading.Lock()
 
 
 def build_player_operations(project_path: str) -> tuple[Operation, ...]:
@@ -245,22 +247,23 @@ def _supervisor() -> SupervisorSession:
     if active.build_profile != "debug_feedback":
         raise OperationError("player.unavailable", "Player validation requires debug_feedback.")
     key = (active.project_root, active.session_id)
-    supervisor = _LOCAL_SUPERVISORS.get(key)
-    if supervisor is None:
-        try:
-            supervisor = SupervisorSession.attach_current_host(
-                active.project_root,
-                active.session_id,
-                mode=active.mode,
-                build_profile=active.build_profile,
-                editor_instance_id=active.editor_instance_id,
-                mcp_host=os.environ.get("INFERNUX_MCP_HOST", "127.0.0.1"),
-                mcp_port=int(os.environ.get("INFERNUX_MCP_PORT", "9713")),
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise OperationError("player.supervisor_attach", str(exc)) from exc
-        _LOCAL_SUPERVISORS[key] = supervisor
-    return supervisor
+    with _LOCAL_SUPERVISORS_LOCK:
+        supervisor = _LOCAL_SUPERVISORS.get(key)
+        if supervisor is None:
+            try:
+                supervisor = SupervisorSession.attach_current_host(
+                    active.project_root,
+                    active.session_id,
+                    mode=active.mode,
+                    build_profile=active.build_profile,
+                    editor_instance_id=active.editor_instance_id,
+                    mcp_host=os.environ.get("INFERNUX_MCP_HOST", "127.0.0.1"),
+                    mcp_port=int(os.environ.get("INFERNUX_MCP_PORT", "9713")),
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise OperationError("player.supervisor_attach", str(exc)) from exc
+            _LOCAL_SUPERVISORS[key] = supervisor
+        return supervisor
 
 
 def _build(

@@ -15,8 +15,6 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "package" / "editor"))
 from infernux_mcp.client import create_loopback_client
-from infernux_mcp.credentials import publish_credentials, remove_credentials
-from infernux_mcp.transport_security import EditorTransportSecurity
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -48,11 +46,8 @@ class ClientTransportTests(unittest.TestCase):
 
         cls.sock = socket.socket()
         cls.sock.bind(("127.0.0.1", 0))
-        port = cls.sock.getsockname()[1]
-        cls.endpoint = f"http://127.0.0.1:{port}/mcp"
-        _, cls.token = publish_credentials(cls.endpoint)
-        app = EditorTransportSecurity(mcp.streamable_http_app(), port=port, token=cls.token)
-        cls.server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
+        cls.endpoint = f"http://127.0.0.1:{cls.sock.getsockname()[1]}/mcp"
+        cls.server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), log_level="error"))
         cls.thread = threading.Thread(target=cls.server.run, kwargs={"sockets": [cls.sock]}, daemon=True)
         cls.thread.start()
         deadline = time.monotonic() + 5
@@ -68,7 +63,6 @@ class ClientTransportTests(unittest.TestCase):
         cls.sock.close()
         if cls.thread.is_alive():
             raise RuntimeError("Test MCP server did not shut down")
-        remove_credentials(cls.endpoint, cls.token)
 
     def cli(self, *args):
         env = dict(os.environ)

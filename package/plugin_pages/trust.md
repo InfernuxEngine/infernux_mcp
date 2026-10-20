@@ -9,6 +9,6 @@ Every call is checked against the operation schema and `ProjectSettings/mcp_capa
 Screenshots come from the engine's Scene, Game, or composed Editor render targets, never from the desktop.
 
 A few short-lived tokens exist for shutting down the Editor, locking the current project, and talking to a Debug Player. Status calls never return the secret itself.
-HTTP requests require a per-user bearer credential. The credential lives under the user state directory, never the project. Standard IDE configurations use a stdio proxy which reads the current credential automatically; direct HTTP clients need authorization. Host checks apply to every route and browser Origin headers are rejected. `/health` is a credential-free readiness probe and exposes no project or owner state.
+The HTTP endpoint has no authentication: MCP access is directed by the local user, and every capability is granted by default. To restrict an agent, narrow `granted_capabilities` (for example `["*.read"]`). Requests whose Host is not `127.0.0.1`/`localhost`, or whose browser Origin is not a local page, are rejected so a remote web page cannot reach the port through DNS rebinding.
 
-Authenticated development access is trusted access, not a sandbox. Writing project Python or building a Player can execute code with the Editor user's privileges. Capability profiles select the intended workflow; they do not isolate code from that user.
+Development access is trusted access, not a sandbox. Writing project Python or building a Player can execute code with the Editor user's privileges.

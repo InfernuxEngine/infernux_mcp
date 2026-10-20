@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import time
-import sys
 import socket
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -26,7 +25,7 @@ PATH = "/mcp"
 HEALTH_PATH = "/health"
 SERVER_NAME = "Infernux Editor"
 _RUNTIME_SERVICE_NAME = "infernux.editor.mcp.http"
-_TRANSPORT_CONTRACT = 1
+_TRANSPORT_CONTRACT = 2
 
 
 @dataclass
@@ -37,7 +36,6 @@ class _ServerState:
     mcp: object
     transport: object
     adapter_shutdown: object
-    credential_token: str = field(default="", repr=False)
     transport_contract: int = _TRANSPORT_CONTRACT
     adapter_begin_shutdown: object = None
     thread: Optional[threading.Thread] = None
@@ -95,11 +93,11 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
     with _lifecycle_lock:
         existing = _active_state()
         contract = getattr(existing, "transport_contract", 0) if existing is not None else _TRANSPORT_CONTRACT
-        if contract not in {0, _TRANSPORT_CONTRACT}:
+        if contract > _TRANSPORT_CONTRACT:
             raise RuntimeError("Infernux MCP transport owner has an unsupported version contract")
-        if existing is not None and contract == 0:
-            # Pre-authentication owners can survive module reload. Retire that
-            # concrete legacy transport before publishing an authenticated one.
+        if existing is not None and contract < _TRANSPORT_CONTRACT:
+            # Owners from an older plugin generation survive module reload.
+            # Retire that transport before publishing the current one.
             _stop_state(existing)
             existing = _active_state()
         if existing is not None:
@@ -160,12 +158,15 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             except Exception as exc:
                 Debug.log_suppressed("infernux_mcp.start_session_log", exc)
         from mcp.server.transport_security import TransportSecuritySettings
+        # No authentication: MCP is driven by the local user. The SDK guard only
+        # stops remote web pages from reaching the loopback port via DNS
+        # rebinding; local browser tools (e.g. MCP Inspector) stay allowed.
         mcp = FastMCP(
             SERVER_NAME, stateless_http=True, json_response=True, log_level="WARNING",
             transport_security=TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}"],
-                allowed_origins=[],
+                allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
             ),
         )
 
@@ -188,8 +189,6 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
 
         import uvicorn
 
-        from infernux_mcp.credentials import publish_credentials
-        from infernux_mcp.transport_security import EditorTransportSecurity
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.setsockopt(socket.SOL_SOCKET,
@@ -197,16 +196,14 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             listener.bind((host, port))
             listener.listen(2048)
             listener.setblocking(False)
-            _, credential_token = publish_credentials(endpoint_url(host=host, port=port))
         except OSError as exc:
             listener.close()
             shutdown_adapter()
             raise RuntimeError("Infernux MCP transport failed before becoming ready") from exc
-        app = EditorTransportSecurity(mcp.streamable_http_app(), port=port, token=credential_token)
 
         transport = uvicorn.Server(
             uvicorn.Config(
-                app,
+                mcp.streamable_http_app(),
                 host=str(host),
                 port=int(port),
                 log_config=None,
@@ -225,7 +222,6 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             transport=transport,
             adapter_shutdown=shutdown_adapter,
             adapter_begin_shutdown=begin_shutdown_adapter,
-            credential_token=credential_token,
         )
 
         def _run() -> None:
@@ -308,9 +304,6 @@ def _reap_state(state: _ServerState) -> None:
     if thread is not None and thread is not threading.current_thread():
         thread.join()
     try:
-        if getattr(state, "transport_contract", 0) == _TRANSPORT_CONTRACT:
-            from infernux_mcp.credentials import remove_credentials
-            remove_credentials(endpoint_url(host=state.host, port=state.port), state.credential_token)
         state.adapter_shutdown()
         if state.project_path:
             _remove_discovery_files(
@@ -360,7 +353,6 @@ def connection_info(*, host: str | None = None, port: int | None = None) -> dict
         (state.port if state is not None else PORT) if port is None else int(port)
     )
     url = endpoint_url(host=resolved_host, port=resolved_port)
-    from infernux_mcp.credentials import credential_path
     return {
         "name": SERVER_NAME,
         "transport": "streamable-http",
@@ -369,28 +361,26 @@ def connection_info(*, host: str | None = None, port: int | None = None) -> dict
         "path": PATH,
         "url": url,
         "health_url": health_url(host=resolved_host, port=resolved_port),
-        "authentication": {"type": "bearer", "token_file": str(credential_path(url))},
         "clients": _client_connection_configs(url),
     }
 
 
 def _client_connection_configs(url: str) -> dict:
-    bridge = os.path.join(os.path.dirname(__file__), "bridge.py")
-    command = {"command": sys.executable, "args": [bridge, "--endpoint", url]}
+    """Direct streamable-HTTP entries in each client's own config dialect."""
+    streamable = {"url": url, "transport": "streamable-http"}
+    typed_http = {"type": "http", "url": url}
     clients = {}
-    for name, file, root_key, typed in (
-        ("generic", "mcp.json", "mcpServers", False),
-        ("cursor", ".cursor/mcp.json", "mcpServers", False),
-        ("claude_code", ".mcp.json", "mcpServers", True),
-        ("vscode_copilot", ".vscode/mcp.json", "servers", True),
-        ("trae", ".trae/mcp.json", "mcpServers", True),
-        ("gemini", ".gemini/settings.json", "mcpServers", False),
+    for name, file, root_key, entry in (
+        ("generic", "mcp.json", "mcpServers", streamable),
+        ("cursor", ".cursor/mcp.json", "mcpServers", streamable),
+        ("claude_code", ".mcp.json", "mcpServers", typed_http),
+        ("vscode_copilot", ".vscode/mcp.json", "servers", typed_http),
+        ("trae", ".trae/mcp.json", "mcpServers", typed_http),
+        ("gemini", ".gemini/settings.json", "mcpServers",
+         {"httpUrl": url, "timeout": 600000, "trust": False}),
     ):
-        entry = dict(command)
-        if typed:
-            entry["type"] = "stdio"
         clients[name] = {"file": file, "format": root_key,
-                         "config": {root_key: {"infernux-editor": entry}}}
+                         "config": {root_key: {"infernux-editor": dict(entry)}}}
     return clients
 
 
@@ -496,7 +486,6 @@ def _write_generic_manifest_file(path: str, info: dict) -> None:
         "port": info["port"],
         "path": info["path"],
         "url": info["url"],
-        "authentication": info["authentication"],
     }
     data["clients"] = {
         name: {"file": client["file"], "format": client["format"]}

@@ -108,6 +108,7 @@ class SupervisorSession:
     _editor_log_handle: Any = field(default=None, init=False, repr=False)
     _player_log_handle: Any = field(default=None, init=False, repr=False)
     _last_handoff: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _operation_thread_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.project_root = resolved_path(self.project_root)
@@ -471,60 +472,62 @@ class SupervisorSession:
         timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
         """Launch a Debug Player with a constrained, engine-owned validation channel."""
-        if self.build_profile != "debug_feedback":
-            raise RuntimeError("Supervisor-managed Player validation requires the debug_feedback profile.")
-        if self._player_state()["running"]:
-            status = self.status() | {"already_running": True}
-            return self.wait_for_player_ready(timeout_seconds=timeout_seconds) if wait_for_ready else status
+        with self._operation_lock():
+            if self.build_profile != "debug_feedback":
+                raise RuntimeError("Supervisor-managed Player validation requires the debug_feedback profile.")
+            if self._player_state()["running"]:
+                status = self.wait_for_player_ready(timeout_seconds=timeout_seconds) if wait_for_ready else self.status()
+                return status | {"already_running": True}
 
-        executable, manifest = _validate_player_executable(executable_path, self.project_root)
-        self._player_executable = executable
-        self._player_start_scene = _resolve_player_start_scene(start_scene, self.project_root, manifest)
-        self._player_control_token = secrets.token_urlsafe(32)
-        self._player_ready = False
-        self._attached_player_pid = 0
-        self._player_log_baselines = {
-            "runtime": _text_file_baseline(self.player_runtime_log_path),
-            "debug": _text_file_baseline(self.player_debug_log_path),
-            "crash": _text_file_baseline(self.player_crash_log_path),
-        }
-        for path in (self.player_control_path, self.player_response_path, self.player_ready_path):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+            executable, manifest = _validate_player_executable(executable_path, self.project_root)
+            self._player_executable = executable
+            self._player_start_scene = _resolve_player_start_scene(start_scene, self.project_root, manifest)
+            self._player_control_token = secrets.token_urlsafe(32)
+            self._player_ready = False
+            self._attached_player_pid = 0
+            self._player_log_baselines = {
+                "runtime": _text_file_baseline(self.player_runtime_log_path),
+                "debug": _text_file_baseline(self.player_debug_log_path),
+                "crash": _text_file_baseline(self.player_crash_log_path),
+            }
+            for path in (self.player_control_path, self.player_response_path, self.player_ready_path):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
 
-        self._close_player_log()
-        os.makedirs(self.artifact_root, exist_ok=True)
-        self._player_log_handle = open(self.player_stdout_path, "w", encoding="utf-8", newline="\n")
-        env = os.environ.copy()
-        env["_INFERNUX_READY_FILE"] = self.player_ready_path
-        env["_INFERNUX_PLAYER_CONTROL_FILE"] = self.player_control_path
-        env["_INFERNUX_PLAYER_RESPONSE_FILE"] = self.player_response_path
-        env["_INFERNUX_PLAYER_CONTROL_TOKEN"] = self._player_control_token
-        env["_INFERNUX_PLAYER_ARTIFACT_ROOT"] = self.artifact_root
-        data_root = _player_data_root(self._player_executable)
-        env["_INFERNUX_PLAYER_RUNTIME_ROOT"] = os.path.dirname(self._player_executable)
-        env["_INFERNUX_PLAYER_DATA_ROOT"] = data_root
-        env["_INFERNUX_PLAYER_MODULE_ROOT"] = os.path.join(data_root, "RuntimeModules")
-        if self._player_start_scene:
-            env["_INFERNUX_PLAYER_START_SCENE_GUID"] = self._player_start_scene
-        try:
-            self._player_process = subprocess.Popen(
-                [self._player_executable],
-                cwd=os.path.dirname(self._player_executable),
-                env=env,
-                stdout=self._player_log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except Exception:
             self._close_player_log()
-            self._player_process = None
-            self._player_control_token = ""
-            raise
-        self._persist_state()
-        return self.wait_for_player_ready(timeout_seconds=timeout_seconds) if wait_for_ready else self.status()
+            os.makedirs(self.artifact_root, exist_ok=True)
+            self._player_log_handle = open(self.player_stdout_path, "w", encoding="utf-8", newline="\n")
+            env = os.environ.copy()
+            env["_INFERNUX_READY_FILE"] = self.player_ready_path
+            env["_INFERNUX_PLAYER_CONTROL_FILE"] = self.player_control_path
+            env["_INFERNUX_PLAYER_RESPONSE_FILE"] = self.player_response_path
+            env["_INFERNUX_PLAYER_CONTROL_TOKEN"] = self._player_control_token
+            env["_INFERNUX_PLAYER_ARTIFACT_ROOT"] = self.artifact_root
+            data_root = _player_data_root(self._player_executable)
+            env["_INFERNUX_PLAYER_RUNTIME_ROOT"] = os.path.dirname(self._player_executable)
+            env["_INFERNUX_PLAYER_DATA_ROOT"] = data_root
+            env["_INFERNUX_PLAYER_MODULE_ROOT"] = os.path.join(data_root, "RuntimeModules")
+            if self._player_start_scene:
+                env["_INFERNUX_PLAYER_START_SCENE_GUID"] = self._player_start_scene
+            try:
+                self._player_process = subprocess.Popen(
+                    [self._player_executable],
+                    cwd=os.path.dirname(self._player_executable),
+                    env=env,
+                    stdout=self._player_log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except Exception:
+                self._player_process = None
+                self._player_control_token = ""
+                raise
+            finally:
+                self._close_player_log()
+            self._persist_state()
+            return self.wait_for_player_ready(timeout_seconds=timeout_seconds) if wait_for_ready else self.status()
 
     def wait_for_player_ready(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         deadline = time.monotonic() + max(float(timeout_seconds), 0.1)
@@ -1766,38 +1769,39 @@ class SupervisorSession:
 
     @contextmanager
     def _operation_lock(self):
-        """Prevent two external Supervisors from mutating a session artifact concurrently."""
-        os.makedirs(self.artifact_root, exist_ok=True)
-        token = secrets.token_urlsafe(18)
-        payload = {"pid": os.getpid(), "token": token, "started_at": time.time()}
-        while True:
-            try:
-                descriptor = os.open(self.operation_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                existing = _read_json_object(self.operation_lock_path)
-                existing_pid = int(existing.get("pid", 0) or 0)
-                if existing_pid > 0 and _pid_is_running(existing_pid):
-                    raise RuntimeError("Another Supervisor operation is already active for this project session.")
+        """Serialize this owner's operations and exclude other session Supervisors."""
+        with self._operation_thread_lock:
+            os.makedirs(self.artifact_root, exist_ok=True)
+            token = secrets.token_urlsafe(18)
+            payload = {"pid": os.getpid(), "token": token, "started_at": time.time()}
+            while True:
                 try:
-                    os.remove(self.operation_lock_path)
-                except FileNotFoundError:
-                    pass
-                continue
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as f:
-                    json.dump(payload, f, ensure_ascii=False)
-                    f.write("\n")
-                    f.flush()
-                    os.fsync(f.fileno())
-                yield
-            finally:
-                current = _read_json_object(self.operation_lock_path)
-                if current.get("token") == token:
+                    descriptor = os.open(self.operation_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    existing = _read_json_object(self.operation_lock_path)
+                    existing_pid = int(existing.get("pid", 0) or 0)
+                    if existing_pid > 0 and _pid_is_running(existing_pid):
+                        raise RuntimeError("Another Supervisor operation is already active for this project session.")
                     try:
                         os.remove(self.operation_lock_path)
                     except FileNotFoundError:
                         pass
-            return
+                    continue
+                try:
+                    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as f:
+                        json.dump(payload, f, ensure_ascii=False)
+                        f.write("\n")
+                        f.flush()
+                        os.fsync(f.fileno())
+                    yield
+                finally:
+                    current = _read_json_object(self.operation_lock_path)
+                    if current.get("token") == token:
+                        try:
+                            os.remove(self.operation_lock_path)
+                        except FileNotFoundError:
+                            pass
+                return
 
     def _close_editor_log(self) -> None:
         handle = self._editor_log_handle

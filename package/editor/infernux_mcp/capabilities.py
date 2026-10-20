@@ -16,43 +16,9 @@ CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")
 
 VALID_PROFILES = frozenset({"developer_assist", "global_validation"})
 
-# Capability domains served by the built-in operation set. The default grant
-# is an explicit enumeration instead of "*": the persisted project config
-# shows the user exactly what the agent may touch, grants can be trimmed per
-# project, and capabilities added by future operation domains are never
-# granted silently. test_mcp_server guards this list against drift.
-READ_CAPABILITY_DOMAINS = (
-    "asset",
-    "camera",
-    "capture",
-    "console",
-    "docs",
-    "input",
-    "material",
-    "particle",
-    "player",
-    "project",
-    "runtime",
-    "scene",
-    "session",
-    "ui",
-)
-WRITE_CAPABILITY_DOMAINS = (
-    "asset",
-    "camera",
-    "capture",
-    "input",
-    "material",
-    "particle",
-    "player",
-    "runtime",
-    "scene",
-    "session",
-    "ui",
-)
-DEFAULT_GRANTED_CAPABILITIES: tuple[str, ...] = tuple(
-    f"{domain}.read" for domain in READ_CAPABILITY_DOMAINS
-) + tuple(f"{domain}.write" for domain in WRITE_CAPABILITY_DOMAINS)
+# MCP is a user-directed development tool: every capability is granted unless
+# the project narrows granted_capabilities (fnmatch patterns, e.g. "*.read").
+DEFAULT_GRANTED_CAPABILITIES: tuple[str, ...] = ("*",)
 
 DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {
     "enabled": True,
@@ -236,7 +202,6 @@ def _normalized_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("configuration must be a JSON object")
     source = config
     normalized = copy.deepcopy(DEFAULT_CAPABILITY_CONFIG)
-    normalized["granted_capabilities"] = []
     for key in ("enabled", "write_default_config_on_bootstrap"):
         if key in source:
             _validate_value(key, source[key], bool)

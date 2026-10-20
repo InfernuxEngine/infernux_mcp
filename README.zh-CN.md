@@ -23,7 +23,7 @@
 
 Infernux 新项目默认带有这个官方插件。已有项目可以在编辑器的**插件**窗口中安装或更新；不需要 Agent 操作时，也可以在同一位置禁用或卸载。
 
-编辑器为 Cursor、Claude Code、VS Code、Trae 和 Gemini 生成标准 stdio 配置。轻量代理把请求转发至 `http://127.0.0.1:9713/mcp`，每次请求读取当前用户的私有凭据，编辑器重启后也会使用新凭据；代理不会初始化引擎。直接连接 HTTP 的客户端必须携带 bearer 凭据，内置 Python 客户端会自动处理。凭据不会写入项目文件、进程参数或环境变量。如需更换端口，请在启动编辑器前设置 `INFERNUX_MCP_PORT`。
+把支持 MCP 的客户端连接到 `http://127.0.0.1:9713/mcp` 即可，不需要凭据。编辑器也会为 Cursor、Claude Code、VS Code、Trae 和 Gemini 写好现成的客户端配置。服务只接受本机连接，默认授予全部能力（可在 `ProjectSettings/mcp_capabilities.json` 中收窄）。如需更换端口，请在启动编辑器前设置 `INFERNUX_MCP_PORT`。
 
 Agent 应先调用 `host_session_status`，再读取 `operation_schema_list`。通过 `operation_schema_search` 找到所需能力、读取准确 schema，最后用 `operation_command_execute` 执行。构建等耗时任务使用 `operation_job_submit`，一组顺序明确的操作可以交给 `operation_batch_execute`，减少通信往返。
 

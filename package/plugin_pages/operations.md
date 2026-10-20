@@ -19,20 +19,15 @@ Player builds and other slow work should go through `operation_job_submit`. Poll
 
 ## Python client
 
-The Editor regenerates its `infernux-editor` entries as standard stdio proxy
-configurations. Valid JSON configurations retain unrelated servers and settings;
-old HTTP entries owned by this plugin are replaced. JSONC, malformed JSON and
+The Editor regenerates its `infernux-editor` entries as direct streamable-HTTP
+configurations pointing at `http://127.0.0.1:9713/mcp`. Valid JSON
+configurations retain unrelated servers and settings. JSONC, malformed JSON and
 non-object documents are left untouched and reported in the Console; other
 client files still update. Merge the corresponding `connection_info()["clients"]`
-configuration into such a file yourself. Restart the client if it was using an old HTTP
-configuration. An existing stdio proxy reads the current credential on every
-request and remains usable after an Editor restart on the same port.
+configuration into such a file yourself.
 
-The server binds only to loopback and requires bearer authorization. The Python
-client reads its credential from the current user's private state directory,
-outside the project. Do not copy credentials into client JSON, Git, process
-arguments or environment variables. Browser Origin requests are rejected;
-`/health` reports readiness only and is not an MCP client endpoint.
+The server binds only to loopback and needs no credential. `/health` reports
+readiness only and is not an MCP client endpoint.
 
 Use the same Python environment as the Editor. From this plugin checkout, add
 `package/editor` to `PYTHONPATH` (preserving existing entries). For example in
