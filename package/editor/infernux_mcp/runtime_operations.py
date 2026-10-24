@@ -46,6 +46,14 @@ def build_runtime_operations() -> tuple[Operation, ...]:
             tags=("runtime", "performance", "gizmos"),
         ),
         operation(
+            "infernux.runtime.ui.input_state",
+            OperationKind.QUERY,
+            "Read current raw, owned and Game mouse frames, viewport mapping and the last UI pointer transition; does not dispatch input.",
+            lambda: on_editor("infernux.runtime.ui.input_state", EditorAutomationHost.instance().ui_input_state),
+            capability="runtime.read",
+            tags=("runtime", "ui", "input", "diagnostics"),
+        ),
+        operation(
             "infernux.runtime.status",
             OperationKind.QUERY,
             "Read Play Mode state, timing, pause state, and time scale.",
