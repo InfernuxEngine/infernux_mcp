@@ -15,7 +15,7 @@ from infernux.engine.path_utils import relative_path, resolved_path
 
 
 def capture_build_identity(
-    policy: dict[str, Any], build_profile: str
+    options: dict[str, Any], build_profile: str
 ) -> dict[str, Any]:
     source_root = _find_source_root()
     return {
@@ -23,7 +23,7 @@ def capture_build_identity(
         "source_root": source_root,
         "package_version": _read_package_version(source_root),
         "git": _git_identity(source_root),
-        "cmake": _cmake_identity(source_root, policy, build_profile),
+        "cmake": _cmake_identity(source_root, options, build_profile),
     }
 
 
@@ -86,11 +86,11 @@ def _run_git(source_root: str, *args: str) -> str | None:
 
 
 def _cmake_identity(
-    source_root: str, policy: dict[str, Any], build_profile: str
+    source_root: str, options: dict[str, Any], build_profile: str
 ) -> dict[str, Any]:
     default_preset = "debug" if build_profile == "debug_feedback" else "release"
-    configured = str(policy.get("cmake_configure_preset", "") or "").strip()
-    build = str(policy.get("cmake_build_preset", "") or "").strip()
+    configured = str(options.get("cmake_configure_preset", "") or "").strip()
+    build = str(options.get("cmake_build_preset", "") or "").strip()
     cache_path = (
         os.path.join(source_root, "out", "build", "CMakeCache.txt")
         if source_root
@@ -112,9 +112,9 @@ def _cmake_identity(
     )
     return {
         "configure_preset": configured or default_preset,
-        "configure_preset_source": "session_policy" if configured else "build_profile_inference",
+        "configure_preset_source": "session_settings" if configured else "build_profile_inference",
         "build_preset": build_preset,
-        "build_preset_source": "session_policy" if build else "build_profile_inference",
+        "build_preset_source": "session_settings" if build else "build_profile_inference",
         "build_configuration": configuration,
         "build_configuration_source": "CMakePresets.json" if configuration else "",
         "presets_path": presets_path,

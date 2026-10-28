@@ -7,7 +7,6 @@ import time
 
 from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
 
-from infernux_mcp import session
 from infernux_mcp.operation_support import on_editor, operation
 
 
@@ -174,19 +173,7 @@ def build_input_operations() -> tuple[Operation, ...]:
     )
 
 
-def _require_validation() -> None:
-    try:
-        session.require_mode("global_validation")
-    except session.McpPolicyError as exc:
-        raise OperationError(
-            "input.mode_required",
-            str(exc),
-            details=session.mode_remediation("global_validation"),
-        ) from exc
-
-
 def _status() -> dict[str, object]:
-    _require_validation()
     return on_editor(
         "infernux.input.status", EditorAutomationHost.instance().input_status
     )
@@ -199,7 +186,6 @@ def _submit(
     timeout_seconds: float = 3.0,
     **arguments: object,
 ) -> dict[str, object]:
-    _require_validation()
     timeout = float(timeout_seconds)
     if not math.isfinite(timeout) or timeout <= 0:
         raise OperationError(
@@ -234,7 +220,6 @@ def _finite(name: str, value: float) -> float:
 
 
 def _wait(sequence: int, timeout_seconds: float = 3.0):
-    _require_validation()
     target = int(sequence)
     if target <= 0:
         raise OperationError("operation.invalid_arguments", "sequence must be positive")
@@ -346,7 +331,6 @@ def _pointer_button(button: int, pressed: bool, x: float, y: float, wait_for_del
 
 
 def _pointer_click(x: float, y: float, button: int = 0, timeout_seconds: float = 3.0):
-    _require_validation()
     px = _finite("x", x)
     py = _finite("y", y)
     if isinstance(button, bool) or int(button) not in range(5):

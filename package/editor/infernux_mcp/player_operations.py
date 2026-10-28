@@ -242,10 +242,8 @@ def build_player_operations(project_path: str) -> tuple[Operation, ...]:
 def _supervisor() -> SupervisorSession:
     try:
         active = session.current()
-    except session.McpPolicyError as exc:
+    except session.McpSessionError as exc:
         raise OperationError("player.session_required", str(exc)) from exc
-    if active.build_profile != "debug_feedback":
-        raise OperationError("player.unavailable", "Player validation requires debug_feedback.")
     key = (active.project_root, active.session_id)
     with _LOCAL_SUPERVISORS_LOCK:
         supervisor = _LOCAL_SUPERVISORS.get(key)
@@ -254,7 +252,6 @@ def _supervisor() -> SupervisorSession:
                 supervisor = SupervisorSession.attach_current_host(
                     active.project_root,
                     active.session_id,
-                    mode=active.mode,
                     build_profile=active.build_profile,
                     editor_instance_id=active.editor_instance_id,
                     mcp_host=os.environ.get("INFERNUX_MCP_HOST", "127.0.0.1"),

@@ -1,28 +1,23 @@
-"""Constrained MCP session policy for remote developer and validation work."""
+"""MCP session state, traces and optional reproducible validation workflows."""
 
 from __future__ import annotations
 
 import ast
 import copy
-import hmac
-import hashlib
 import json
 import os
-from pathlib import Path
 import re
-import sys
 import time
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from infernux.engine.path_utils import is_path_within, path_key, portable_path, relative_path, resolved_path
+from infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
 from infernux_mcp import checkpoints as checkpoint_store
 from infernux_mcp.session_identity import capture_build_identity
 
 
-VALID_MODES = frozenset({"developer_assist", "global_validation"})
 VALID_BUILD_PROFILES = frozenset({"debug_feedback", "release_exploration"})
 VALID_BLOCKER_CATEGORIES = frozenset({
     "project_bug",
@@ -31,7 +26,6 @@ VALID_BLOCKER_CATEGORIES = frozenset({
     "mcp_bug",
     "public_api_gap",
     "nonportable_workaround",
-    "policy_violation",
     "inconclusive",
 })
 
@@ -47,25 +41,20 @@ _BLOCKER_REPORT_ID = re.compile(BLOCKER_REPORT_ID_PATTERN)
 _CURRENT: "McpSession | None" = None
 
 
-class McpPolicyError(RuntimeError):
-    """Raised when an operation crosses its active MCP session boundary."""
+class McpSessionError(RuntimeError):
+    """Raised when session data or a requested workflow is invalid."""
 
 
 @dataclass
 class McpSession:
     session_id: str
     project_root: str
-    mode: str
     build_profile: str
     recording_enabled: bool
     artifact_root: str
     editor_instance_id: str = ""
-    supervisor_lease: str = field(default="", repr=False)
     build_identity: dict[str, Any] = field(default_factory=dict)
     managed_checkpoints_required: bool = False
-    allowed_project_roots: list[str] = field(default_factory=list)
-    whl_readonly_source: list[str] = field(default_factory=list)
-    workaround_allowlist: list[str] = field(default_factory=list)
     attempt_id: str = ""
     attempt_active: bool = False
     checkpoint: str = ""
@@ -79,12 +68,9 @@ class McpSession:
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
-        value.pop("supervisor_lease", None)
         value.pop("attempt_baseline_ledger", None)
         value["recording_available"] = self.build_profile == "debug_feedback"
         value["recording_enabled"] = bool(self.recording_enabled and value["recording_available"])
-        value["supervisor_lease_configured"] = bool(self.supervisor_lease)
-        value["supervisor_lease_fingerprint"] = _secret_fingerprint(self.supervisor_lease)
         return value
 
 
@@ -93,36 +79,24 @@ def configure(project_path: str, config: dict[str, Any] | None = None) -> McpSes
     global _CURRENT
     config = config or {}
     root = resolved_path(project_path or ".")
-    policy = config.get("session") or {}
-    policy = policy if isinstance(policy, dict) else {}
-    mode = str(config.get("profile", "developer_assist") or "developer_assist")
-    if mode not in VALID_MODES:
-        mode = "developer_assist"
-    build_profile = str(policy.get("build_profile", "debug_feedback") or "debug_feedback")
+    options = config.get("session") or {}
+    options = options if isinstance(options, dict) else {}
+    build_profile = str(options.get("build_profile", "debug_feedback") or "debug_feedback")
     if build_profile not in VALID_BUILD_PROFILES:
         build_profile = "debug_feedback"
-    session_id = checkpoint_store.normalize_checkpoint_id(policy.get("session_id") or _new_session_id())
-    roots = _normalized_roots(policy.get("allowed_project_roots"), root)
-    if not _is_within_any_root(root, roots):
-        roots.insert(0, root)
+    session_id = checkpoint_store.normalize_checkpoint_id(options.get("session_id") or _new_session_id())
     artifact_root = os.path.join(root, ".infernux", "mcp_sessions", session_id)
-    build_identity = _capture_build_identity(policy, build_profile)
+    build_identity = _capture_build_identity(options, build_profile)
     editor_instance_id = str(os.environ.get("INFERNUX_MCP_EDITOR_INSTANCE_ID", "") or "").strip() or uuid.uuid4().hex
-    supervisor_lease = str(os.environ.get("INFERNUX_MCP_SUPERVISOR_LEASE", "") or "").strip()
     _CURRENT = McpSession(
         session_id=session_id,
         project_root=root,
-        mode=mode,
         build_profile=build_profile,
-        recording_enabled=bool(policy.get("recording_enabled", False)) and build_profile == "debug_feedback",
+        recording_enabled=bool(options.get("recording_enabled", False)) and build_profile == "debug_feedback",
         artifact_root=artifact_root,
         editor_instance_id=editor_instance_id,
-        supervisor_lease=supervisor_lease,
         build_identity=build_identity,
-        managed_checkpoints_required=bool(policy.get("managed_checkpoints_required", False)),
-        allowed_project_roots=roots,
-        whl_readonly_source=_normalized_paths(policy.get("whl_readonly_source"), root),
-        workaround_allowlist=[str(item) for item in (policy.get("workaround_allowlist") or []) if str(item)],
+        managed_checkpoints_required=bool(options.get("managed_checkpoints_required", False)),
     )
     try:
         from infernux_mcp.trace import set_session_project_path
@@ -135,7 +109,7 @@ def configure(project_path: str, config: dict[str, Any] | None = None) -> McpSes
 
 def current() -> McpSession:
     if _CURRENT is None:
-        raise McpPolicyError("MCP session is not configured yet.")
+        raise McpSessionError("MCP session is not configured yet.")
     return _CURRENT
 
 
@@ -158,102 +132,6 @@ def list_checkpoints() -> list[dict[str, Any]]:
     return checkpoint_store.list_checkpoints(active.project_root, active.artifact_root, session_id=active.session_id)
 
 
-def require_mode(*allowed: str) -> McpSession:
-    session = current()
-    if session.mode not in {str(item) for item in allowed}:
-        expected = ", ".join(sorted({str(item) for item in allowed}))
-        raise McpPolicyError(f"Tool requires MCP mode {expected}; active mode is {session.mode}.")
-    return session
-
-
-def mode_remediation(required_mode: str) -> dict[str, Any]:
-    """Describe the exact safe action an agent can take to change MCP mode."""
-    active = current()
-    required = str(required_mode or "").strip()
-    if required not in VALID_MODES:
-        raise ValueError(f"Unsupported MCP mode: {required or '<empty>'}.")
-
-    from infernux_mcp import capabilities
-
-    config_argv = [
-        sys.executable,
-        "-c",
-        (
-            "import sys; sys.path.insert(0, sys.argv[3]); "
-            "from infernux_mcp import capabilities; "
-            "root, mode = sys.argv[1:3]; "
-            "config = capabilities.load_capability_config(root); "
-            "config['enabled'] = True; config['profile'] = mode; "
-            "print(capabilities.save_config(config, root))"
-        ),
-        active.project_root,
-        required,
-        str(Path(__file__).resolve().parent.parent),
-    ]
-    result: dict[str, Any] = {
-        "active_mode": active.mode,
-        "required_mode": required,
-        "project_root": active.project_root,
-        "config_path": capabilities.config_path(active.project_root),
-        "restart_required": True,
-        "config_update_argv": config_argv,
-        "capture_source": "engine_render_target_only",
-    }
-    if active.supervisor_lease:
-        result.update({
-            "recommended_action": "run_supervisor_switch_argv",
-            "supervisor_switch_argv": [
-                sys.executable,
-                "-c",
-                (
-                    "import sys; sys.path.insert(0, sys.argv[4]); "
-                    "from infernux_mcp.supervisor import SupervisorSession; "
-                    "managed = SupervisorSession.resume(sys.argv[1], sys.argv[2]); "
-                    "print(managed.switch_mode(sys.argv[3], "
-                    "reason='MCP operation requires this mode'))"
-                ),
-                active.project_root,
-                active.session_id,
-                required,
-                str(Path(__file__).resolve().parent.parent),
-            ],
-            "instructions": (
-                "Run supervisor_switch_argv as an argument vector outside this MCP request, "
-                "then reconnect to the endpoint returned by the command. The Supervisor will "
-                "restart the Editor and verify the new mode."
-            ),
-        })
-    else:
-        result.update({
-            "recommended_action": "run_config_update_argv_then_restart_editor",
-            "instructions": (
-                "Run config_update_argv as an argument vector outside this MCP request, then "
-                "request a normal application restart through an available lifecycle mechanism "
-                "or ask the user to reopen the Editor. Reconnect only after host_session_status "
-                "reports the required mode."
-            ),
-        })
-    return result
-
-
-def require_release_exploration() -> McpSession:
-    session = require_mode("developer_assist")
-    if session.build_profile != "release_exploration":
-        raise McpPolicyError("Wheel source access is only available in release_exploration sessions.")
-    return session
-
-
-def require_supervisor_lease(lease_token: str) -> McpSession:
-    """Require the private lease injected by a trusted local Supervisor process."""
-    active = current()
-    provided = str(lease_token or "")
-    if not active.supervisor_lease:
-        raise McpPolicyError("This Editor was not launched by a Supervisor session with shutdown authority.")
-    if not provided or not hmac.compare_digest(provided, active.supervisor_lease):
-        raise McpPolicyError("Supervisor shutdown lease is missing or invalid.")
-    return active
-
-
 def validate_script(source: str, *, filename: str = "<script>") -> dict[str, Any]:
     """Validate Python syntax without executing imports or project code."""
     violations: list[dict[str, Any]] = []
@@ -272,7 +150,7 @@ def validate_script(source: str, *, filename: str = "<script>") -> dict[str, Any
 
 
 def read_project_script(relative_path: str) -> dict[str, Any]:
-    session = require_mode("developer_assist")
+    session = current()
     target = _script_path(session, relative_path)
     if not os.path.isfile(target):
         raise FileNotFoundError(f"Project script was not found: {relative_path}")
@@ -282,11 +160,11 @@ def read_project_script(relative_path: str) -> dict[str, Any]:
 
 def prepare_project_script_write(relative_path: str, content: str) -> dict[str, Any]:
     """Validate one developer-authored script without mutating the project."""
-    session = require_mode("developer_assist")
+    session = current()
     target = _script_path(session, relative_path)
     lint = validate_script(content, filename=target)
     if not lint["passed"]:
-        raise McpPolicyError("Script syntax validation failed.")
+        raise McpSessionError("Script syntax validation failed.")
     return {
         "absolute_path": target,
         "path": _relative_to_project(session, target),
@@ -295,16 +173,14 @@ def prepare_project_script_write(relative_path: str, content: str) -> dict[str, 
 
 
 def read_release_wheel_source(wheel_path: str, member: str) -> dict[str, Any]:
-    """Read an allowlisted text member from a wheel during release exploration."""
-    session = require_release_exploration()
+    """Read a text member from a wheel and record its origin."""
+    session = current()
     target = resolved_path(wheel_path)
-    if path_key(target) not in {path_key(path) for path in session.whl_readonly_source}:
-        raise McpPolicyError("Wheel is not listed in session.whl_readonly_source.")
     if not target.lower().endswith(".whl") or not os.path.isfile(target):
-        raise FileNotFoundError("Approved wheel file was not found.")
+        raise FileNotFoundError("Wheel file was not found.")
     member = portable_path(str(member or "")).lstrip("/")
     if not member.endswith((".py", ".pyi", ".txt", ".json")):
-        raise McpPolicyError("Only text source members may be read from an approved wheel.")
+        raise McpSessionError("Only text source members may be read from a wheel.")
     with zipfile.ZipFile(target) as archive:
         try:
             raw = archive.read(member)
@@ -325,36 +201,33 @@ def read_release_wheel_source(wheel_path: str, member: str) -> dict[str, Any]:
 
 def write_blocker(payload: dict[str, Any]) -> dict[str, Any]:
     """Persist a reproducible blocker report for the Repair Agent."""
-    session = require_mode("global_validation")
+    session = current()
     data = copy.deepcopy(payload if isinstance(payload, dict) else {})
     category = str(data.get("category", "") or "")
     if category not in VALID_BLOCKER_CATEGORIES:
         allowed = ", ".join(sorted(VALID_BLOCKER_CATEGORIES))
-        raise McpPolicyError(
+        raise McpSessionError(
             f"Unsupported blocker category: {category or '<empty>'}. Allowed categories: {allowed}."
         )
     for key in ("title", "expected", "actual"):
         if not str(data.get(key, "") or "").strip():
-            raise McpPolicyError(f"Blocker report requires non-empty '{key}'.")
+            raise McpSessionError(f"Blocker report requires non-empty '{key}'.")
     workflow = data.get("normal_workflow")
     if not isinstance(workflow, list) or not workflow:
-        raise McpPolicyError("Blocker report requires a non-empty normal_workflow list.")
+        raise McpSessionError("Blocker report requires a non-empty normal_workflow list.")
     if not session.attempt_id or not session.checkpoint:
-        raise McpPolicyError("Blocker reports require a started attempt with a checkpoint.")
+        raise McpSessionError("Blocker reports require a started attempt with a checkpoint.")
     if session.attempt_active:
-        raise McpPolicyError("Stop and save the current attempt trace before reporting a blocker.")
+        raise McpSessionError("Stop and save the current attempt trace before reporting a blocker.")
     if not session.last_trace_id:
-        raise McpPolicyError("Stop and save the current attempt trace before reporting a blocker.")
+        raise McpSessionError("Stop and save the current attempt trace before reporting a blocker.")
     if not isinstance(data.get("logic_evidence"), dict) or not data["logic_evidence"]:
-        raise McpPolicyError("Blocker report requires non-empty logic_evidence.")
+        raise McpSessionError("Blocker report requires non-empty logic_evidence.")
     if not str(data.get("persistence_proof", "") or "").strip():
-        raise McpPolicyError("Blocker report requires persistence_proof.")
-    if session.build_profile == "debug_feedback" and category == "nonportable_workaround":
-        raise McpPolicyError("nonportable_workaround is only valid in release_exploration.")
+        raise McpSessionError("Blocker report requires persistence_proof.")
     data.update({
         "session_id": session.session_id,
         "project_root": session.project_root,
-        "mode": session.mode,
         "build_profile": session.build_profile,
         "recording_enabled": bool(session.recording_enabled),
         "attempt_id": session.attempt_id,
@@ -367,7 +240,7 @@ def write_blocker(payload: dict[str, Any]) -> dict[str, Any]:
     })
     report_id = data["report_id"] if "report_id" in data else f"blocker-{uuid.uuid4().hex}"
     if not isinstance(report_id, str) or not _BLOCKER_REPORT_ID.fullmatch(report_id):
-        raise McpPolicyError(
+        raise McpSessionError(
             "report_id must be 1-96 ASCII letters, digits, '_' or '-', start with a letter "
             "or digit, and must not be a Windows device name. Omit it to generate an ID."
         )
@@ -377,7 +250,7 @@ def write_blocker(payload: dict[str, Any]) -> dict[str, Any]:
     if not is_path_within(report_dir, session.artifact_root, allow_root=False) or not is_path_within(
         path, report_dir, allow_root=False
     ):
-        raise McpPolicyError("Blocker report path must stay inside the session reports directory.")
+        raise McpSessionError("Blocker report path must stay inside the session reports directory.")
     # Serialize before creating a file, then reserve this ID exclusively. Existing
     # reports (including file links) are never truncated or used as write targets.
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -386,7 +259,7 @@ def write_blocker(payload: dict[str, Any]) -> dict[str, Any]:
         with open(path, "x", encoding="utf-8", newline="\n") as f:
             f.write(text)
     except FileExistsError as exc:
-        raise McpPolicyError(f"Blocker report_id {report_id!r} already exists.") from exc
+        raise McpSessionError(f"Blocker report_id {report_id!r} already exists.") from exc
     return {"report_id": report_id, "path": path, "report": data}
 
 
@@ -428,7 +301,6 @@ def blocker_report_contract() -> dict[str, Any]:
             "rendered or object-graph state through an available formal operation before treating "
             "the action as evidence."
         ),
-        "debug_feedback_policy": "Report the blocker; do not create a workaround or mutate project internals.",
     }
 
 
@@ -436,11 +308,11 @@ def start_attempt(task: str, checkpoint: str) -> dict[str, Any]:
     """Start one replayable project attempt from an explicit checkpoint."""
     active = current()
     if active.attempt_active:
-        raise McpPolicyError("A project attempt is already active. Stop it before starting another attempt.")
+        raise McpSessionError("A project attempt is already active. Stop it before starting another attempt.")
     checkpoint = str(checkpoint or "").strip()
     if not checkpoint:
         if active.managed_checkpoints_required:
-            raise McpPolicyError(
+            raise McpSessionError(
                 "Managed project attempts require a checkpoint from "
                 "infernux.mcp.checkpoint.list."
             )
@@ -464,10 +336,10 @@ def start_attempt(task: str, checkpoint: str) -> dict[str, Any]:
             current_ledger = checkpoint_store.capture_project_ledger(active.project_root)
             delta = checkpoint_store.diff_ledgers(baseline_ledger, current_ledger)
         except (OSError, ValueError, checkpoint_store.CheckpointError) as exc:
-            raise McpPolicyError(f"Managed checkpoint validation failed: {exc}") from exc
+            raise McpSessionError(f"Managed checkpoint validation failed: {exc}") from exc
         compact = checkpoint_store.compact_delta(delta)
         if any(compact[f"{kind}_count"] for kind in ("added", "modified", "deleted")):
-            raise McpPolicyError(
+            raise McpSessionError(
                 "Current project does not match the managed checkpoint. "
                 "Ask the external Supervisor to restore it or create a new clean checkpoint. "
                 f"Delta: {json.dumps(compact, ensure_ascii=False)}"
@@ -495,7 +367,6 @@ def start_attempt(task: str, checkpoint: str) -> dict[str, Any]:
         "attempt_id": active.attempt_id,
         "checkpoint": active.checkpoint,
         "session_id": active.session_id,
-        "mode": active.mode,
         "build_profile": active.build_profile,
         "recording_enabled": active.recording_enabled,
         "build_identity": active.build_identity,
@@ -520,10 +391,10 @@ def stop_attempt() -> dict[str, Any]:
     """Stop and save the active project trace before handoff or triage."""
     active = current()
     if not active.attempt_id:
-        raise McpPolicyError("No project attempt is active.")
+        raise McpSessionError("No project attempt is active.")
     if not active.attempt_active:
         if not active.last_trace_id:
-            raise McpPolicyError("The project attempt is already stopped and has no saved trace.")
+            raise McpSessionError("The project attempt is already stopped and has no saved trace.")
         response = {
             "attempt_id": active.attempt_id,
             "checkpoint": active.checkpoint,
@@ -543,7 +414,7 @@ def stop_attempt() -> dict[str, Any]:
     trace_id = str(trace.get("trace_id", "") or "")
     if not trace_id:
         active.attempt_active = False
-        raise McpPolicyError("Project attempt did not produce a trace.")
+        raise McpSessionError("Project attempt did not produce a trace.")
     active.attempt_active = False
     active.last_trace_id = trace_id
     active.last_trace_path = str(result.get("saved_path", "") or "")
@@ -572,7 +443,6 @@ def _write_attempt_manifest(active: McpSession, trace: dict[str, Any]) -> str:
         "session": {
             "session_id": active.session_id,
             "project_root": active.project_root,
-            "mode": active.mode,
             "build_profile": active.build_profile,
             "recording_enabled": active.recording_enabled,
         },
@@ -646,24 +516,6 @@ def _new_session_id() -> str:
     return f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
-def _secret_fingerprint(value: str) -> str:
-    """Expose only a stable diagnostic fingerprint for a process-local secret."""
-    secret = str(value or "")
-    if not secret:
-        return ""
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
-
-
-def _normalized_paths(value: Any, project_root: str) -> list[str]:
-    items = value if isinstance(value, (list, tuple)) else []
-    return [resolved_path(os.path.join(project_root, str(item)) if not os.path.isabs(str(item)) else str(item)) for item in items if str(item)]
-
-
-def _normalized_roots(value: Any, project_root: str) -> list[str]:
-    roots = _normalized_paths(value, project_root)
-    return roots or [project_root]
-
-
 def _is_within_any_root(path: str, roots: list[str]) -> bool:
     return any(is_path_within(path, root) for root in roots)
 
@@ -673,11 +525,11 @@ def _script_path(session: McpSession, relative_path: str) -> str:
     if value.startswith("Assets/"):
         value = value[len("Assets/"):]
     if not value or not value.endswith(".py"):
-        raise McpPolicyError("Project scripts must use a relative .py path under Assets/.")
+        raise McpSessionError("Project scripts must use a relative .py path under Assets/.")
     target = resolved_path(os.path.join(session.project_root, "Assets", value))
     assets_root = os.path.join(session.project_root, "Assets")
     if not _is_within_any_root(target, [assets_root]):
-        raise McpPolicyError("Project script path escapes Assets/.")
+        raise McpSessionError("Project script path escapes Assets/.")
     return target
 
 

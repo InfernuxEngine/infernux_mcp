@@ -8,7 +8,7 @@ instantiate FastMCP even in a Player Cook worker.
 
 
 def current_config():
-    from infernux_mcp.capabilities import current_config as implementation
+    from infernux_mcp.settings import current_config as implementation
 
     return implementation()
 

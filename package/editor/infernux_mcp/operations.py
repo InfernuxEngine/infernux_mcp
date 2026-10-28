@@ -58,11 +58,11 @@ def build_operations(project_path: str) -> tuple[Operation, ...]:
         operation(
             "infernux.mcp.supervisor.shutdown",
             OperationKind.COMMAND,
-            "Request normal Editor shutdown using the private Supervisor lease.",
+            "Request normal Editor shutdown for the specified Editor instance.",
             _supervisor_shutdown,
             capability="session.write",
-            input_properties={"lease_token": {"type": "string"}},
-            required=("lease_token",),
+            input_properties={"editor_instance_id": {"type": "string"}},
+            required=("editor_instance_id",),
             side_effects=("Requests the Editor's normal close lifecycle.",),
             tags=("session", "supervisor", "shutdown"),
         ),
@@ -135,11 +135,10 @@ def _project_info_handler(project_path: str) -> Callable[[], dict[str, object]]:
     return execute
 
 
-def _supervisor_shutdown(lease_token: str) -> dict[str, object]:
-    try:
-        active = session.require_supervisor_lease(lease_token)
-    except session.McpPolicyError as exc:
-        raise OperationError("mcp.supervisor_lease", str(exc)) from exc
+def _supervisor_shutdown(editor_instance_id: str) -> dict[str, object]:
+    active = session.current()
+    if editor_instance_id != active.editor_instance_id:
+        raise OperationError("mcp.editor_instance_mismatch", "The requested Editor instance is no longer current.")
 
     def request_close() -> dict[str, object]:
         EditorAutomationHost.instance().request_editor_close()

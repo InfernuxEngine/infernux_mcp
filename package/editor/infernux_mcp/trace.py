@@ -13,7 +13,7 @@ from typing import Any
 
 from infernux.engine.path_utils import relative_path, resolved_path
 from infernux.host.operations import OperationError
-from infernux_mcp.capabilities import feature_enabled
+from infernux_mcp.settings import feature_enabled
 
 _active_trace: dict[str, Any] | None = None
 _last_trace: dict[str, Any] | None = None
@@ -303,7 +303,7 @@ def _record_session_operation(
 
 def _session_log_enabled() -> bool:
     try:
-        from infernux_mcp.capabilities import feature_enabled
+        from infernux_mcp.settings import feature_enabled
         return feature_enabled("session_call_log")
     except Exception:
         return True
@@ -311,7 +311,7 @@ def _session_log_enabled() -> bool:
 
 def _session_result_max_string() -> int:
     try:
-        from infernux_mcp.capabilities import limit
+        from infernux_mcp.settings import limit
         return int(limit("session_log_result_max_string", 480) or 480)
     except Exception:
         return 480
@@ -319,7 +319,7 @@ def _session_result_max_string() -> int:
 
 def _trace_result_max_string() -> int:
     try:
-        from infernux_mcp.capabilities import limit
+        from infernux_mcp.settings import limit
         return int(limit("trace_result_max_string", 480) or 480)
     except Exception:
         return 480
@@ -342,7 +342,7 @@ def _jsonable_summary(
 ) -> Any:
     if limit_name:
         try:
-            from infernux_mcp.capabilities import limit
+            from infernux_mcp.settings import limit
             max_string = int(limit(limit_name, max_string) or max_string)
         except Exception:
             pass

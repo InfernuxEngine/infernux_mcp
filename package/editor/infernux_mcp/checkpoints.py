@@ -19,10 +19,10 @@ from infernux.engine.filesystem import replace_path
 CHECKPOINT_ROOTS = ("Assets", "ProjectSettings")
 _CHECKPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _IGNORED_DIRECTORY_NAMES = frozenset({"__pycache__"})
-_IGNORED_FILE_NAMES = frozenset({".infernux-engine-lock.json", "mcp_capabilities.json", ".DS_Store"})
+_IGNORED_FILE_NAMES = frozenset({".infernux-engine-lock.json", "mcp_settings.json", ".DS_Store"})
 _PRESERVED_PROJECT_PATHS = (
     "ProjectSettings/EditorSettings.json",
-    "ProjectSettings/mcp_capabilities.json",
+    "ProjectSettings/mcp_settings.json",
 )
 _IGNORED_PROJECT_PATHS = frozenset(path.lower() for path in _PRESERVED_PROJECT_PATHS)
 

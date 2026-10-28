@@ -15,12 +15,14 @@ from infernux.host import (
     OperationJobRegistry,
     OperationKind,
     OperationRegistry,
-    capability_granted,
 )
 
 
 OWNER = "infernux/mcp"
 MAX_GATEWAY_TOOLS = 32
+# The shared engine host accepts a caller context. MCP is a local toolbox and
+# always supplies the complete context, including for dynamically added tools.
+_HOST_CONTEXT = ("*",)
 
 _registry: OperationRegistry | None = None
 _jobs: OperationJobRegistry | None = None
@@ -53,15 +55,15 @@ def register_gateways(
         from infernux.host import install_editor_operations
 
         install_editor_operations(project_path, registry)
-        from infernux_mcp import capabilities
+        from infernux_mcp import settings
         if config is None:
-            _config = capabilities.configure(project_path, write_default=False)
+            _config = settings.configure(project_path, write_default=False)
         else:
-            _config = capabilities.apply_config(project_path, dict(config))
+            _config = settings.apply_config(project_path, dict(config))
         _command_owner = CommandOwner(OWNER)
         _command_owner.timeout_ms = _config["limits"]["main_thread_timeout_ms"]
         from infernux_mcp import session
-        # Registration defines a new plugin lifetime and policy session.
+        # Registration defines a new plugin lifetime and session.
         session.configure(project_path, dict(_config))
         from infernux_mcp.operations import build_operations
 
@@ -221,7 +223,7 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
     def operation_query_execute(
         operation: str, arguments: dict[str, Any] | None = None
     ) -> dict[str, object]:
-        """Execute one query operation after schema and capability validation."""
+        """Execute one query operation after schema validation."""
 
         return _execute(operation, arguments, expected_kind=OperationKind.QUERY)
 
@@ -229,7 +231,7 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
     def operation_command_execute(
         operation: str, arguments: dict[str, Any] | None = None
     ) -> dict[str, object]:
-        """Execute one command operation after schema and capability validation."""
+        """Execute one command operation after schema validation."""
 
         return _execute(operation, arguments, expected_kind=OperationKind.COMMAND)
 
@@ -273,7 +275,7 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
                     "results": list(
                         _require_registry().execute_batch(
                             normalized,
-                            capabilities=_granted_capabilities(),
+                            capabilities=_HOST_CONTEXT,
                             stop_on_error=bool(stop_on_error),
                             execute=_invoke_operation,
                         )
@@ -296,7 +298,7 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
             job_id = _require_jobs().submit(
                 operation,
                 arguments,
-                capabilities=_granted_capabilities(),
+                capabilities=_HOST_CONTEXT,
                 execute=partial(_invoke_operation, ticket=ticket),
                 on_done=lambda future: finish_operation(
                     ticket, ok=False, error="Job cancelled before execution", cancelled=True,
@@ -327,45 +329,26 @@ def _register_gateway_tools(mcp, project_path: str, command_owner: CommandOwner)
 
     @gateway("host_capabilities")
     def host_capabilities() -> dict[str, object]:
-        """Describe granted capabilities, per-capability grant status, and the
-        machine-readable list of operations blocked by missing grants."""
-
+        """Describe the available local toolbox and operation categories."""
         try:
             registry = _require_registry()
-            granted = _granted_capabilities()
             documents = registry.list()
-            rows: dict[str, dict[str, object]] = {}
-            blocked: list[dict[str, object]] = []
+            categories: dict[str, int] = {}
             for document in documents:
-                required = tuple(str(item) for item in document.get("capabilities", ()))
-                for name in required:
-                    row = rows.setdefault(
-                        name,
-                        {
-                            "capability": name,
-                            "granted": capability_granted(name, granted),
-                            "operations": 0,
-                        },
-                    )
-                    row["operations"] = int(row["operations"]) + 1
-                missing = [name for name in required if not capability_granted(name, granted)]
-                if missing:
-                    blocked.append({"operation": document["id"], "missing": missing})
-            from infernux_mcp import capabilities as capability_config
-
-            return _ok(
-                {
-                    "granted": list(granted),
-                    "capabilities": sorted(rows.values(), key=lambda row: str(row["capability"])),
-                    "blocked_operations": blocked,
-                    "blocked_operation_count": len(blocked),
-                    "config_path": capability_config.config_path(),
-                    "operation_revision": registry.revision,
-                    "operation_count": len(documents),
-                    "owned_operation_count": len(_operation_ids),
-                    "gateway_count": len(_gateway_names),
-                }
-            )
+                for name in document.get("capabilities", ()):
+                    categories[name] = categories.get(name, 0) + 1
+            from infernux_mcp import settings
+            return _ok({
+                "capabilities": [
+                    {"capability": name, "operations": count}
+                    for name, count in sorted(categories.items())
+                ],
+                "config_path": settings.config_path(),
+                "operation_revision": registry.revision,
+                "operation_count": len(documents),
+                "owned_operation_count": len(_operation_ids),
+                "gateway_count": len(_gateway_names),
+            })
         except OperationError as exc:
             return _error(exc)
 
@@ -417,13 +400,6 @@ def _compact_schema(value: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _granted_capabilities() -> tuple[str, ...]:
-    configured = _config.get("granted_capabilities", ())
-    if not isinstance(configured, (list, tuple)):
-        return ()
-    return tuple(configured)
-
-
 def _execute(
     operation: str,
     arguments: Mapping[str, object] | None,
@@ -434,13 +410,10 @@ def _execute(
         value = _invoke_operation(
             operation,
             arguments,
-            capabilities=_granted_capabilities(),
             expected_kind=expected_kind,
         )
         return _ok({"operation": operation, "result": value})
     except OperationError as exc:
-        if exc.code == "operation.permission_denied":
-            return _error(_with_grant_remediation(exc))
         return _error(exc)
 
 
@@ -452,32 +425,13 @@ def _invoke_operation(operation, arguments=None, *, capabilities=(), expected_ki
         ticket = begin_operation(operation, arguments=dict(arguments or {}))
     try:
         value = _require_registry().execute(
-            operation, arguments, capabilities=capabilities, expected_kind=expected_kind,
+            operation, arguments, capabilities=_HOST_CONTEXT, expected_kind=expected_kind,
         )
     except BaseException as exc:
         finish_operation(ticket, ok=False, error=str(exc))
         raise
     finish_operation(ticket, ok=True, result=value)
     return value
-
-
-def _with_grant_remediation(exc: OperationError) -> OperationError:
-    """Attach a machine-readable grant remediation to a permission failure."""
-
-    from infernux_mcp import capabilities as capability_config
-
-    details = dict(exc.details) if isinstance(exc.details, Mapping) else {}
-    details.setdefault("granted", list(_granted_capabilities()))
-    details["grant_remediation"] = {
-        "config_path": capability_config.config_path(),
-        "config_pointer": "/granted_capabilities",
-        "hint": (
-            "Append the required capabilities to granted_capabilities in the "
-            "project mcp_capabilities.json, then re-register the MCP adapter. "
-            "Grants accept fnmatch patterns such as 'scene.*' or '*.read'."
-        ),
-    }
-    return OperationError(exc.code, str(exc), details=details)
 
 
 def _require_registry() -> OperationRegistry:

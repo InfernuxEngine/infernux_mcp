@@ -1,15 +1,11 @@
-# 注意
+# 本机工具箱
 
-这是本机开发接口，不是公网服务。只听 localhost。
+MCP 只监听本机。所有已注册的工具在同一会话中直接可用，没有凭据、权限表、工作模式或独立的 Supervisor 关闭租约。
 
-![仅本机访问](media/trust_gates.png)
+调用检查工具是否存在、JSON 参数类型和真实引擎状态。命令进入编辑器正常的主线程队列，支持撤销的命令走现有撤销栈。异步操作需要确认完成后再使用结果；超时不代表已经回滚。
 
-每次调用都会核对 operation、参数和项目权限（`ProjectSettings/mcp_capabilities.json`）。编辑前阅读 schema 的 `reversible` 与 `side_effects`：声明支持撤销的命令走编辑器自己的撤销栈；保存或重载文件、恢复检查点、构建 Player 不能统一通过撤销回滚。
+截图来自 Scene、Game、Camera 或编辑器合成渲染目标，返回 PNG 路径，Agent 和开发者都可以读取。
 
-截图来自引擎的 Scene / Game 画面，不会去抓桌面。
+关闭编辑器使用公开的编辑器实例 ID 来确定目标。引擎的单写者项目锁、导出 Debug Player 的进程通道继续负责进程协调，不用于配置 MCP 工具权限。
 
-关编辑器、认准当前项目、跟 Debug Player 说话，各有一个短期口令。状态接口不会把口令原文吐出来。
-
-HTTP 接口不做鉴权：MCP 由本机用户主导，默认授予全部能力。需要限制 Agent 时，把 `granted_capabilities` 改窄即可（例如 `["*.read"]`）。Host 不是 `127.0.0.1`/`localhost`，或带有非本机页面 Origin 的请求会被拒绝，防止外部网页借 DNS rebinding 访问这个端口。
-
-开发权限属于可信访问，不是沙箱。编写项目 Python 或构建 Player 可以使用编辑器用户的权限执行代码。
+`ProjectSettings/mcp_settings.json` 只包含追踪、连接发现、执行限额和会话与构建信息。旧权限配置不读取、不迁移。HTTP 的 Host 与 Origin 校验让服务保持本机访问。

@@ -17,13 +17,13 @@ The official Model Context Protocol plugin for [Infernux](https://github.com/Che
 
 | Package | Version | Compatible engine | Endpoint |
 | --- | --- | --- | --- |
-| `infernux/mcp` | 0.1.20 | Infernux >=0.4.2 | `http://127.0.0.1:9713/mcp` |
+| `infernux/mcp` | 0.2.0 | Infernux >=0.4.3 | `http://127.0.0.1:9713/mcp` |
 
 ## Install and connect
 
 New Infernux projects include this official plugin by default. Existing projects can install or update it from the Editor's **Plugins** window. You can disable or uninstall it there when agent access is not needed.
 
-Point an MCP-compatible client to `http://127.0.0.1:9713/mcp`; no credential is needed. The Editor also writes ready-to-use client configurations for Cursor, Claude Code, VS Code, Trae and Gemini. The server accepts localhost connections only, and all capabilities are granted by default (narrow them in `ProjectSettings/mcp_capabilities.json`). Set `INFERNUX_MCP_PORT` before starting the Editor to choose another loopback port.
+Point an MCP-compatible client to `http://127.0.0.1:9713/mcp`; no credential is needed. The Editor also writes ready-to-use client configurations for Cursor, Claude Code, VS Code, Trae and Gemini. The server accepts localhost connections only, and exposes the full local toolbox without permission lists or MCP operating modes. Set `INFERNUX_MCP_PORT` before starting the Editor to choose another loopback port.
 
 Start a session with `host_session_status`, then read `operation_schema_list`. Search the catalog with `operation_schema_search`, inspect the exact schema you need, and call it through `operation_command_execute`. Long-running builds belong in `operation_job_submit`; known ordered calls can be grouped with `operation_batch_execute`.
 
@@ -44,10 +44,7 @@ stdout remains machine-readable JSON. Operation errors, partial batch failures,
 and failed/cancelled jobs return a nonzero exit status.
 
 See [client workflows and latency diagnostics](package/plugin_pages/operations.md#python-client)
-for the exact protocol, timeout behavior and a read-only benchmark. These source
-changes retain the existing gateway APIs and capability gates; no extra grants
-or automatic retries are introduced. The published package version is unchanged
-until a release is tagged.
+for the exact protocol, timeout behavior and a read-only benchmark. All tools share the same session. The CLI never retries failed commands automatically.
 
 ## Compute diagnostics
 
@@ -66,3 +63,7 @@ The installable plugin lives in `package/`. The root README, standalone packer, 
 ## License
 
 [MIT](LICENSE).
+
+## 0.2.0 configuration break
+
+Project settings now live in `ProjectSettings/mcp_settings.json`, covering tracing, discovery, session/build metadata and execution limits. The old capability configuration, mode-switch API and Supervisor shutdown lease are removed without migration. `host_capabilities` describes tools, not access grants. To close an Editor, pass its public `editor_instance_id` from `host_session_status`; this identifies the intended process and is not a credential.

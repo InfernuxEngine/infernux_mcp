@@ -28,7 +28,6 @@ from infernux.engine.path_utils import (
 from infernux.engine.platform_player_bootstrap import read_player_build_manifest
 
 
-HANDOFF_STATES = frozenset({"idle", "started", "completed", "failed"})
 
 
 def _validate_player_executable(executable_path: str, project_root: str) -> tuple[str, dict[str, Any]]:
@@ -252,15 +251,6 @@ def _read_json_line(line: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
-
-
-def _normalize_handoff_record(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    state = str(value.get("state", "") or "")
-    if state and state not in HANDOFF_STATES:
-        return {}
-    return dict(value)
 
 
 def _normalize_player_component_probes(
@@ -535,7 +525,6 @@ __all__ = [
     "_wait_for_pid_exit",
     "_read_json_object",
     "_read_json_line",
-    "_normalize_handoff_record",
     "_normalize_player_component_probes",
     "_bounded_finite_float",
     "_normalize_player_hold_scancodes",

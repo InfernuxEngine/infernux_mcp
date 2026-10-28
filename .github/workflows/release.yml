@@ -24,6 +24,8 @@ jobs:
         run: python -m unittest discover -s test -p 'test_client*.py' -v
       - name: Test Python launcher virtual environments
         run: python -m unittest discover -s test -p 'test_supervisor_paths.py' -v
+      - name: Test toolbox settings
+        run: python -m unittest discover -s test -p 'test_toolbox.py' -v
       - name: Validate Python sources and reproducible package output
         run: |
           python -m compileall -q package/editor

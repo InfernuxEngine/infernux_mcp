@@ -65,9 +65,7 @@ returns 1 for an operation error, failed batch step, or failed/cancelled job,
 while preserving the server envelope on stdout. Arbitrary fields inside an
 operation's result are not treated as gateway errors.
 
-The connection is local and uses the existing schemas, capability grants, undo
-paths and session identity. Reusing a connection does not authorize additional
-actions or suppress client/host confirmation requirements. The CLI never replays a failed call or opens a replacement client to retry it. A timeout or disconnect does not prove a command was
+All local operations are available in one session, without permission grants or MCP mode switches. Calls still validate their schema and use the engine's ordinary undo and execution lifecycle. The CLI never replays a failed call or opens a replacement client to retry it. A timeout or disconnect does not prove a command was
 cancelled or rolled back; inspect the scene/job before deciding whether to retry.
 Completed request results are written before disconnecting. A disconnect error
 is reported separately on stderr and causes a nonzero exit status, preserving
@@ -99,9 +97,13 @@ python -m unittest discover -s test -p 'test_client*.py' -v
 The benchmark only reads session status, the compact schema catalog, runtime
 status, and a 20-query batch. It compares fresh-process wall time against the
 same calls on one persistent connection and prints raw phases plus medians.
-It changes no project capability settings and never retries failed calls.
+It changes no project settings and never retries failed calls.
 Transport tests require `package/requirements.txt`; client-only unit tests can
 run without the engine or dependencies (`-p test_client.py`). These measurements
 are not render performance or proof of a successful scene load/capture. A
 headless host can author and inspect scenes but cannot produce render-target
 screenshots; use a graphical Editor for capture verification.
+
+## Project settings
+
+`ProjectSettings/mcp_settings.json` configures tracing, discovery, session/build metadata and timeouts. There are no permission lists or MCP operating modes. The 0.2.0 release removes the old capability config and mode-switch APIs without migration. Scene edits, scripts, input, semantic UI, captures and Player tools work in one session. Capture results include `output_path` for viewing the PNG directly. Editor shutdown takes the public `editor_instance_id` returned by `host_session_status` to identify the intended process.

@@ -7,7 +7,6 @@ import time
 
 from infernux.host import EditorAutomationHost, Operation, OperationError, OperationKind
 
-from infernux_mcp import session
 from infernux_mcp.operation_support import on_editor, operation
 
 
@@ -65,19 +64,7 @@ def build_ui_operations() -> tuple[Operation, ...]:
     )
 
 
-def _require_validation() -> None:
-    try:
-        session.require_mode("global_validation")
-    except session.McpPolicyError as exc:
-        raise OperationError(
-            "ui.mode_required",
-            str(exc),
-            details=session.mode_remediation("global_validation"),
-        ) from exc
-
-
 def _snapshot(label: str = "", kind: str = "", window: str = "", semantic_id: str = "", visible_only: bool = True, limit: int = 500):
-    _require_validation()
     host = EditorAutomationHost.instance()
     # RequestSnapshot owns one frame; continuous capture is an explicit setting.
     request = on_editor("infernux.ui.semantic.request", host.request_semantic_snapshot)
@@ -130,7 +117,6 @@ def _snapshot(label: str = "", kind: str = "", window: str = "", semantic_id: st
 
 
 def _status():
-    _require_validation()
     raw = on_editor(
         "infernux.ui.semantic.status", EditorAutomationHost.instance().semantic_snapshot
     )
@@ -143,7 +129,6 @@ def _status():
 
 
 def _set_capture(enabled: bool):
-    _require_validation()
     value = on_editor(
         "infernux.ui.semantic.capture.set",
         lambda: EditorAutomationHost.instance().semantic_capture_enabled(enabled),

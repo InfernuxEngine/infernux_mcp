@@ -1,4 +1,4 @@
-"""External lifecycle helper for constrained remote MCP project sessions."""
+"""External lifecycle helper for local MCP project sessions."""
 
 from __future__ import annotations
 
@@ -29,14 +29,12 @@ from infernux.engine.path_utils import (
     resolved_path,
     same_path,
 )
-from infernux_mcp import capabilities
+from infernux_mcp import settings
 from infernux_mcp import checkpoints as checkpoint_store
 from infernux_mcp.launcher_paths import python_launcher_path
 
 
-VALID_MODES = frozenset({"developer_assist", "global_validation"})
 VALID_BUILD_PROFILES = frozenset({"debug_feedback", "release_exploration"})
-HANDOFF_STATES = frozenset({"idle", "started", "completed", "failed"})
 QUERY_GATEWAY = "operation_query_execute"
 COMMAND_GATEWAY = "operation_command_execute"
 PROJECT_INFO_OPERATION = "infernux.project.info"
@@ -83,7 +81,6 @@ def _source_python_root() -> str:
 @dataclass
 class SupervisorSession:
     project_root: str
-    mode: str = "global_validation"
     build_profile: str = "debug_feedback"
     recording_enabled: bool = False
     managed_checkpoints_required: bool = False
@@ -97,7 +94,6 @@ class SupervisorSession:
     _player_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _attached_player_pid: int = field(default=0, init=False, repr=False)
     _editor_instance_id: str = field(default="", init=False, repr=False)
-    _supervisor_lease: str = field(default="", init=False, repr=False)
     _project_lock_token: str = field(default="", init=False, repr=False)
     _player_control_token: str = field(default="", init=False, repr=False)
     _player_executable: str = field(default="", init=False, repr=False)
@@ -107,12 +103,10 @@ class SupervisorSession:
     _mcp_ready: bool = field(default=False, init=False, repr=False)
     _editor_log_handle: Any = field(default=None, init=False, repr=False)
     _player_log_handle: Any = field(default=None, init=False, repr=False)
-    _last_handoff: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _operation_thread_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.project_root = resolved_path(self.project_root)
-        self.mode = _require_choice("mode", self.mode, VALID_MODES)
         self.build_profile = _require_choice("build_profile", self.build_profile, VALID_BUILD_PROFILES)
         self.recording_enabled = bool(self.recording_enabled and self.build_profile == "debug_feedback")
         self.managed_checkpoints_required = bool(self.managed_checkpoints_required)
@@ -201,8 +195,8 @@ class SupervisorSession:
 
         The original Python process that created a ``SupervisorSession`` is
         allowed to end while the Editor continues to run. A resumed session
-        only trusts a saved PID after the loopback endpoint, mode/profile,
-        editor instance ID, lease fingerprint, and project lock all agree.
+        only trusts a saved PID after the loopback endpoint, build identity,
+        editor instance ID and project lock all agree.
         """
         root = resolved_path(project_root or "")
         requested_session_id = str(session_id or "").strip()
@@ -226,7 +220,6 @@ class SupervisorSession:
         port = int(endpoint.port or 9713)
         resumed = cls(
             root,
-            mode=str(state.get("mode", "global_validation") or "global_validation"),
             build_profile=str(state.get("build_profile", "debug_feedback") or "debug_feedback"),
             recording_enabled=bool(state.get("recording_enabled", False)),
             managed_checkpoints_required=bool(state.get("managed_checkpoints_required", False)),
@@ -236,7 +229,6 @@ class SupervisorSession:
             started_at=float(state.get("started_at", time.time()) or time.time()),
         )
         resumed._editor_instance_id = str(state.get("editor_instance_id", "") or "").strip()
-        resumed._supervisor_lease = str(state.get("supervisor_lease", "") or "").strip()
         resumed._project_lock_token = str(state.get("project_lock_token", "") or "").strip()
         resumed._mcp_ready = bool(state.get("mcp_ready", False))
         resumed._player_control_token = str(state.get("player_control_token", "") or "").strip()
@@ -244,13 +236,12 @@ class SupervisorSession:
         resumed._player_start_scene = str(state.get("player_start_scene", "") or "").strip()
         resumed._player_ready = bool(state.get("player_ready", False))
         resumed._player_log_baselines = _normalize_file_baselines(state.get("player_log_baselines"))
-        resumed._last_handoff = _normalize_handoff_record(state.get("last_handoff"))
         persisted_pid = int(state.get("editor_pid", 0) or 0)
         if persisted_pid > 0 and _pid_is_running(persisted_pid):
-            if not resumed._has_leased_editor_identity():
+            if not resumed._has_editor_identity():
                 raise RuntimeError(
-                    "Cannot resume a running Supervisor session without its Editor instance ID, "
-                    "Supervisor lease, and project-lock token."
+                    "Cannot resume a running Supervisor session without its Editor instance ID "
+                    "and project-lock token."
                 )
             resumed._attached_editor_pid = persisted_pid
             if verify_mcp:
@@ -261,7 +252,7 @@ class SupervisorSession:
                 if not resumed._try_attach_matching_unmanaged_editor(timeout_seconds=timeout_seconds):
                     raise RuntimeError(
                         "A live Infernux MCP endpoint exists for this session artifact, but its persisted Editor PID is stale. "
-                        "Refusing to rewrite the project policy without a verified attachment."
+                        "Refusing to rewrite the project options without a verified attachment."
                     )
         persisted_player_pid = int(state.get("player_pid", 0) or 0)
         if persisted_player_pid > 0 and _pid_is_running(persisted_player_pid):
@@ -294,7 +285,6 @@ class SupervisorSession:
         project_root: str,
         session_id: str,
         *,
-        mode: str,
         build_profile: str,
         editor_instance_id: str,
         mcp_host: str = "127.0.0.1",
@@ -323,7 +313,6 @@ class SupervisorSession:
 
         attached = cls(
             root,
-            mode=mode,
             build_profile=build_profile,
             mcp_host=mcp_host,
             mcp_port=mcp_port,
@@ -344,7 +333,6 @@ class SupervisorSession:
             attached.managed_checkpoints_required = bool(
                 state.get("managed_checkpoints_required", False)
             )
-            attached._supervisor_lease = str(state.get("supervisor_lease", "") or "")
             attached._project_lock_token = str(
                 state.get("project_lock_token", "") or lock.get("token", "") or ""
             )
@@ -358,7 +346,6 @@ class SupervisorSession:
             attached._player_log_baselines = _normalize_file_baselines(
                 state.get("player_log_baselines")
             )
-            attached._last_handoff = _normalize_handoff_record(state.get("last_handoff"))
             persisted_player_pid = int(state.get("player_pid", 0) or 0)
             if persisted_player_pid > 0 and _pid_is_running(persisted_player_pid):
                 attached._attached_player_pid = persisted_player_pid
@@ -379,17 +366,15 @@ class SupervisorSession:
             os.makedirs(os.path.join(self.project_root, directory), exist_ok=True)
         os.makedirs(self.artifact_root, exist_ok=True)
 
-        config = capabilities.load_capability_config(self.project_root)
-        config["profile"] = self.mode
-        policy = config.setdefault("session", {})
-        policy.update({
+        config = settings.load_config(self.project_root)
+        options = config.setdefault("session", {})
+        options.update({
             "session_id": self.session_id,
             "build_profile": self.build_profile,
             "recording_enabled": self.recording_enabled,
             "managed_checkpoints_required": self.managed_checkpoints_required,
-            "allowed_project_roots": [self.project_root],
         })
-        capabilities.save_config(config, self.project_root)
+        settings.save_config(config, self.project_root)
         self._persist_state()
         return self.status()
 
@@ -405,9 +390,6 @@ class SupervisorSession:
     def editor_log_path(self) -> str:
         return os.path.join(self.artifact_root, "editor.stdout.log")
 
-    @property
-    def handoff_history_path(self) -> str:
-        return os.path.join(self.artifact_root, "mode-handoffs.jsonl")
 
     @property
     def checkpoint_history_path(self) -> str:
@@ -441,7 +423,6 @@ class SupervisorSession:
         env["INFERNUX_MCP_HOST"] = self.mcp_host
         env["INFERNUX_MCP_PORT"] = str(self.mcp_port)
         env["INFERNUX_MCP_EDITOR_INSTANCE_ID"] = self._editor_instance_id
-        env["INFERNUX_MCP_SUPERVISOR_LEASE"] = self._supervisor_lease
         env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._project_lock_token
         source_python = _source_python_root()
         if source_python:
@@ -473,8 +454,6 @@ class SupervisorSession:
     ) -> dict[str, Any]:
         """Launch a Debug Player with a constrained, engine-owned validation channel."""
         with self._operation_lock():
-            if self.build_profile != "debug_feedback":
-                raise RuntimeError("Supervisor-managed Player validation requires the debug_feedback profile.")
             if self._player_state()["running"]:
                 status = self.wait_for_player_ready(timeout_seconds=timeout_seconds) if wait_for_ready else self.status()
                 return status | {"already_running": True}
@@ -931,20 +910,20 @@ class SupervisorSession:
         if not editor["running"]:
             self._mark_editor_stopped()
             return self.status() | {"stopped": True, "already_stopped": True}
-        if not self._has_leased_editor_identity():
-            raise RuntimeError("Cannot request a normal Editor shutdown without a verified Supervisor lease.")
+        if not self._has_editor_identity():
+            raise RuntimeError("Cannot close the Editor before identifying its instance and project lock.")
         self._verify_attached_editor(timeout_seconds=timeout_seconds)
         result = self._call_mcp_operation(
             COMMAND_GATEWAY,
             SUPERVISOR_SHUTDOWN_OPERATION,
-            {"lease_token": self._supervisor_lease},
+            {"editor_instance_id": self._editor_instance_id},
             timeout_seconds=timeout_seconds,
         )
         if not bool(result.get("close_requested")):
             raise RuntimeError("Editor rejected the normal Supervisor shutdown request.")
         if not self._wait_for_clean_editor_shutdown(int(editor["pid"]), timeout_seconds=timeout_seconds):
             raise RuntimeError(
-                "Editor did not complete its normal shutdown before the handoff timeout. "
+                "Editor did not complete its normal shutdown before the timeout. "
                 "The Supervisor left it running and did not force-terminate the process."
             )
         self._mark_editor_stopped()
@@ -1003,7 +982,6 @@ class SupervisorSession:
                 session_id=self.session_id,
                 metadata={
                     "reason": str(reason or ""),
-                    "mode": self.mode,
                     "build_profile": self.build_profile,
                 },
             )
@@ -1185,235 +1163,6 @@ class SupervisorSession:
         self._mark_editor_stopped()
         return self.status() | {"stopped": True, "already_stopped": False, "forced": True}
 
-    def switch_mode(
-        self,
-        target_mode: str,
-        *,
-        checkpoint: str = "",
-        reason: str = "",
-        build_profile: str | None = None,
-        recording_enabled: bool | None = None,
-        restart_editor: bool = True,
-        timeout_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        """Atomically hand one visible Editor session to another MCP mode.
-
-        The two profiles remain disjoint. This method only changes the
-        Supervisor-owned project policy after the old endpoint has shut down,
-        then starts a fresh Editor identity and verifies its project, session,
-        mode, profile, lease, and project lock before returning success.
-        """
-        requested_checkpoint = str(checkpoint or "").strip()
-        if not requested_checkpoint:
-            if self.managed_checkpoints_required:
-                raise ValueError("Managed mode switches require an explicit checkpoint.")
-            requested_checkpoint = "session-start"
-        with self._operation_lock():
-            return self._handoff_mode_locked(
-                target_mode,
-                checkpoint=requested_checkpoint,
-                reason=reason,
-                build_profile=build_profile,
-                recording_enabled=recording_enabled,
-                restart_editor=restart_editor,
-                timeout_seconds=timeout_seconds,
-            )
-
-    def handoff_history(self) -> list[dict[str, Any]]:
-        """Return the secret-free mode handoff audit trail for this session."""
-        path = self.handoff_history_path
-        if not os.path.isfile(path):
-            return []
-        records: list[dict[str, Any]] = []
-        try:
-            with open(path, "r", encoding="utf-8") as stream:
-                for line in stream:
-                    value = _read_json_line(line)
-                    if value:
-                        records.append(value)
-        except OSError:
-            return records
-        return records
-
-    def _handoff_mode_locked(
-        self,
-        target_mode: str,
-        *,
-        checkpoint: str,
-        reason: str = "",
-        build_profile: str | None = None,
-        recording_enabled: bool | None = None,
-        restart_editor: bool = True,
-        timeout_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        """Safely move a project between constrained MCP operating modes.
-
-        A handoff is intentionally not a scene backup or restore mechanism.  It
-        records the declared checkpoint and refuses to terminate a managed Editor
-        unless ``infernux.project.info`` reports a clean scene in edit mode.
-        """
-        next_mode = _require_choice("target_mode", target_mode, VALID_MODES)
-        checkpoint = str(checkpoint or "").strip()
-        if not checkpoint:
-            raise ValueError("A non-empty handoff checkpoint is required.")
-
-        next_build_profile = _require_choice(
-            "build_profile",
-            self.build_profile if build_profile is None else build_profile,
-            VALID_BUILD_PROFILES,
-        )
-        requested_recording = self.recording_enabled if recording_enabled is None else bool(recording_enabled)
-        next_recording_enabled = bool(requested_recording and next_build_profile == "debug_feedback")
-        previous_status = self.status()
-        event: dict[str, Any] = {
-            "handoff_id": f"handoff-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
-            "started_at": time.time(),
-            "state": "started",
-            "phase": "preflight",
-            "checkpoint": checkpoint,
-            "reason": str(reason or ""),
-            "from": {
-                "mode": self.mode,
-                "build_profile": self.build_profile,
-                "recording_enabled": self.recording_enabled,
-                "editor_running": previous_status["editor_running"],
-            },
-            "to": {
-                "mode": next_mode,
-                "build_profile": next_build_profile,
-                "recording_enabled": next_recording_enabled,
-                "restart_editor": bool(restart_editor),
-            },
-        }
-
-        try:
-            preflight = self._preflight_handoff(timeout_seconds=timeout_seconds)
-            event["preflight"] = preflight
-            if self.managed_checkpoints_required:
-                checkpoint_status = checkpoint_store.checkpoint_status(
-                    self.project_root,
-                    self.artifact_root,
-                    checkpoint,
-                    session_id=self.session_id,
-                )
-                if not (
-                    checkpoint_status.get("exists")
-                    and checkpoint_status.get("payload_valid")
-                    and checkpoint_status.get("current_match")
-                ):
-                    raise RuntimeError(
-                        "Cannot hand off with a managed checkpoint that is missing, invalid, or stale. "
-                        "Ask the external Supervisor to create a new clean checkpoint or restore the requested one."
-                    )
-                event["checkpoint_proof"] = {
-                    "checkpoint_id": checkpoint,
-                    "ledger_digest": checkpoint_status.get("ledger_digest", ""),
-                    "file_count": checkpoint_status.get("file_count", 0),
-                    "total_bytes": checkpoint_status.get("total_bytes", 0),
-                }
-            _append_json_line(self.handoff_history_path, event)
-
-            was_running = bool(previous_status["editor_running"])
-            same_policy = (
-                self.mode == next_mode
-                and self.build_profile == next_build_profile
-                and self.recording_enabled == next_recording_enabled
-            )
-            if same_policy:
-                event.update({
-                    "state": "completed",
-                    "phase": "noop",
-                    "completed_at": time.time(),
-                    "result": {
-                        "editor_restarted": False,
-                        "mcp_ready": bool(previous_status["mcp_ready"]),
-                        "no_change": True,
-                    },
-                })
-                self._last_handoff = dict(event)
-                _append_json_line(self.handoff_history_path, event)
-                self._persist_state()
-                return self.status() | {"handoff": event, "launch": None}
-
-            if was_running:
-                event["phase"] = "stopping_old_editor"
-                stopped = self.stop_editor(timeout_seconds=timeout_seconds)
-                if not stopped.get("stopped") or stopped.get("editor_running"):
-                    raise RuntimeError("Supervisor could not stop the Editor during mode handoff.")
-
-            event["phase"] = "publishing_policy"
-            self.mode = next_mode
-            self.build_profile = next_build_profile
-            self.recording_enabled = next_recording_enabled
-            configured = self.prepare_project()
-            event["configured_at"] = time.time()
-            event["configured"] = {
-                "mode": configured["mode"],
-                "build_profile": configured["build_profile"],
-                "recording_enabled": configured["recording_enabled"],
-            }
-
-            launch_status: dict[str, Any] | None = None
-            if was_running and restart_editor:
-                event["phase"] = "starting_new_editor"
-                launch_status = self.launch_editor(wait_for_mcp=True, timeout_seconds=timeout_seconds)
-                if not launch_status.get("mcp_ready"):
-                    raise RuntimeError(
-                        "Editor restarted for mode handoff but MCP did not become ready: "
-                        f"{launch_status.get('ready_error', 'unknown error')}"
-                    )
-
-            event["state"] = "completed"
-            event["phase"] = "verified"
-            event["completed_at"] = time.time()
-            event["result"] = {
-                "editor_restarted": bool(was_running and restart_editor),
-                "mcp_ready": bool(launch_status and launch_status.get("mcp_ready")),
-            }
-            self._last_handoff = dict(event)
-            _append_json_line(self.handoff_history_path, event)
-            self._persist_state()
-            return self.status() | {"handoff": event, "launch": launch_status}
-        except Exception as exc:
-            event["state"] = "failed"
-            event["phase"] = "failed"
-            event["failed_at"] = time.time()
-            event["error"] = str(exc)
-            self._last_handoff = dict(event)
-            _append_json_line(self.handoff_history_path, event)
-            self._persist_state()
-            raise
-
-    def _preflight_handoff(self, *, timeout_seconds: float) -> dict[str, Any]:
-        """Return the state that made an in-place handoff safe to perform."""
-        if self._player_state()["running"]:
-            raise RuntimeError("Cannot hand off MCP mode while a standalone validation Player is running.")
-        if not self._editor_state()["running"]:
-            if _mcp_health_is_alive(self.mcp_health_endpoint):
-                raise RuntimeError(
-                    "Cannot hand off because a live Infernux MCP endpoint exists without a verified Supervisor-owned Editor PID."
-                )
-            return {"required": False, "editor_running": False}
-
-        self._verify_attached_editor(timeout_seconds=timeout_seconds)
-        session_status = self._read_host_session_status(timeout_seconds=timeout_seconds)
-        if bool(session_status.get("attempt_active")):
-            raise RuntimeError("Cannot hand off while a global validation attempt is still active.")
-
-        project_info = self._read_project_info(timeout_seconds=timeout_seconds)
-        active_scene = project_info.get("active_scene") or {}
-        if bool(active_scene.get("dirty")):
-            raise RuntimeError("Cannot hand off while the active scene has unsaved changes.")
-        if project_info.get("play_state") != "edit":
-            raise RuntimeError("Cannot hand off while the Editor is not in edit mode.")
-        return {
-            "required": True,
-            "editor_running": True,
-            "active_scene": active_scene,
-            "play_state": project_info["play_state"],
-            "attempt_active": False,
-            "editor_instance_id": self._editor_instance_id,
-        }
 
     def _read_project_info(self, *, timeout_seconds: float) -> dict[str, Any]:
         return self._call_mcp_operation(
@@ -1486,9 +1235,9 @@ class SupervisorSession:
         return data
 
     def _verify_attached_editor(self, *, timeout_seconds: float) -> dict[str, Any]:
-        """Verify that an endpoint, lease, and project lock all name this exact Editor instance."""
-        if not self._has_leased_editor_identity():
-            raise RuntimeError("Supervisor session has no Editor instance identity or shutdown lease to verify.")
+        """Verify that an endpoint and project lock all name this exact Editor instance."""
+        if not self._has_editor_identity():
+            raise RuntimeError("Supervisor session has no Editor instance ID or project lock to verify.")
         readiness = self.wait_for_mcp_ready(timeout_seconds=timeout_seconds)
         if not readiness.get("mcp_ready"):
             raise RuntimeError(
@@ -1502,29 +1251,23 @@ class SupervisorSession:
             raise RuntimeError("MCP endpoint project root does not match the persisted Supervisor session.")
         if observed_session_id != self.session_id:
             raise RuntimeError("MCP endpoint session_id does not match the persisted Supervisor session.")
-        if observed.get("mode") != self.mode:
-            raise RuntimeError("MCP endpoint mode does not match the persisted Supervisor session.")
         if observed.get("build_profile") != self.build_profile:
             raise RuntimeError("MCP endpoint build profile does not match the persisted Supervisor session.")
         if str(observed.get("editor_instance_id", "") or "") != self._editor_instance_id:
             raise RuntimeError("MCP endpoint Editor instance ID does not match the persisted Supervisor session.")
-        if not bool(observed.get("supervisor_lease_configured")):
-            raise RuntimeError("MCP endpoint was not configured with a Supervisor shutdown lease.")
-        if str(observed.get("supervisor_lease_fingerprint", "") or "") != _secret_fingerprint(self._supervisor_lease):
-            raise RuntimeError("MCP endpoint Supervisor lease fingerprint does not match the persisted session.")
         self._verify_project_lock_ownership()
         self._mcp_ready = True
         self._persist_state()
         return observed
 
     def _try_attach_matching_unmanaged_editor(self, *, timeout_seconds: float) -> bool:
-        """Observe a manually launched Editor without taking ownership of it.
+        """Attach to a manually launched Editor after identifying its project.
 
         Player validation can survive the original Supervisor host exiting while
         a user continues the exact same validation Editor manually.  This path
         intentionally accepts only a live endpoint and project lock which both
-        agree with the persisted session's public identity.  It does not grant
-        shutdown ownership because the original private lease is unavailable.
+        agree with the persisted session's public identity. Instance IDs identify
+        the target; they are not authorization tokens.
         """
         try:
             observed = self._read_host_session_status(timeout_seconds=timeout_seconds)
@@ -1535,14 +1278,14 @@ class SupervisorSession:
             return False
         if str(observed.get("session_id", "") or "") != self.session_id:
             return False
-        if observed.get("mode") != self.mode or observed.get("build_profile") != self.build_profile:
-            return False
         lock = _read_json_object(self.project_lock_path)
         lock_pid = int(lock.get("pid", 0) or 0) if lock else 0
         lock_project = resolved_path(str(lock.get("project_path", "") or "")) if lock else ""
         if lock_pid <= 0 or not _pid_is_running(lock_pid) or not same_path(lock_project, self.project_root):
             return False
         self._attached_editor_pid = lock_pid
+        self._editor_instance_id = str(observed.get("editor_instance_id", "") or "")
+        self._project_lock_token = str(lock.get("token", "") or "")
         self._mcp_ready = True
         return True
 
@@ -1588,7 +1331,6 @@ class SupervisorSession:
         return {
             "session_id": self.session_id,
             "project_root": self.project_root,
-            "mode": self.mode,
             "build_profile": self.build_profile,
             "recording_enabled": self.recording_enabled,
             "managed_checkpoints_required": self.managed_checkpoints_required,
@@ -1604,7 +1346,6 @@ class SupervisorSession:
             "editor_exit_code": editor["exit_code"],
             "editor_process_owner": editor["owner"],
             "editor_instance_id": self._editor_instance_id,
-            "supervisor_lease_fingerprint": _secret_fingerprint(self._supervisor_lease),
             "project_lock_fingerprint": _secret_fingerprint(self._project_lock_token),
             "player_pid": int(player["pid"]),
             "player_running": bool(player["running"]),
@@ -1618,7 +1359,6 @@ class SupervisorSession:
             "player_debug_log_path": self.player_debug_log_path,
             "player_crash_log_path": self.player_crash_log_path,
             "player_control_fingerprint": _secret_fingerprint(self._player_control_token),
-            "last_handoff": dict(self._last_handoff),
             "agent_handoff": self.agent_handoff(),
         }
 
@@ -1640,11 +1380,9 @@ class SupervisorSession:
             "project_root": self.project_root,
             "working_directory": self.project_root,
             "session_id": self.session_id,
-            "mode": self.mode,
             "build_profile": self.build_profile,
             "recording_enabled": self.recording_enabled,
             "managed_checkpoints_required": self.managed_checkpoints_required,
-            "last_handoff": dict(self._last_handoff),
             "endpoint": self.mcp_endpoint,
             "health_endpoint": self.mcp_health_endpoint,
             "environment_activation": ["conda", "activate", "infernux"],
@@ -1669,9 +1407,7 @@ class SupervisorSession:
                 "Run probe_argv through the available shell before deciding that MCP tools are unavailable.",
                 "Run schema_list_argv once and cache its compact schemas until host_session_status reports a different revision.",
                 "Use operation_batch_execute for ordered groups of known operations instead of issuing one gateway call per step.",
-                "Use the returned MCP tool schema and current mode policy; a mode_required error contains an exact command_argv for obtaining the required mode.",
                 "A missing directly injected connector is not an MCP outage when probe_argv succeeds.",
-                "Use Supervisor.switch_mode to move between developer_assist and global_validation; never assume a mode change happened until the returned endpoint identity and mode are verified.",
                 "Use MCP engine input operations for interaction and render-target capture operations for visual validation.",
                 f"For a managed attempt, query {CHECKPOINT_LIST_OPERATION}, then {CHECKPOINT_STATUS_OPERATION} for the selected checkpoint before commanding {ATTEMPT_START_OPERATION}; only the external Supervisor may create or restore checkpoints.",
             ],
@@ -1679,17 +1415,15 @@ class SupervisorSession:
 
     def _new_editor_identity(self) -> None:
         self._editor_instance_id = uuid.uuid4().hex
-        self._supervisor_lease = secrets.token_urlsafe(32)
         self._project_lock_token = secrets.token_urlsafe(32)
 
-    def _has_leased_editor_identity(self) -> bool:
-        return bool(self._editor_instance_id and self._supervisor_lease and self._project_lock_token)
+    def _has_editor_identity(self) -> bool:
+        return bool(self._editor_instance_id and self._project_lock_token)
 
     def _state_payload(self) -> dict[str, Any]:
         """Persist private continuity data without exposing it from the public status API."""
         return self.status() | {
             "editor_instance_id": self._editor_instance_id,
-            "supervisor_lease": self._supervisor_lease,
             "project_lock_token": self._project_lock_token,
             "player_control_token": self._player_control_token,
             "player_log_baselines": dict(self._player_log_baselines),
@@ -1704,7 +1438,6 @@ class SupervisorSession:
         self._process = None
         self._attached_editor_pid = 0
         self._editor_instance_id = ""
-        self._supervisor_lease = ""
         self._project_lock_token = ""
         self._close_editor_log()
         self._persist_state()
@@ -1821,7 +1554,6 @@ from infernux_mcp.supervisor_utils import (
     _compact_checkpoint_manifest,
     _mcp_health_is_alive,
     _normalize_file_baselines,
-    _normalize_handoff_record,
     _normalize_player_component_probes,
     _normalize_player_discovered_object_count,
     _normalize_player_discovery_component_types,

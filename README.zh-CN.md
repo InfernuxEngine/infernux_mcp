@@ -17,13 +17,13 @@
 
 | 包标识 | 版本 | 适配引擎 | 默认地址 |
 | --- | --- | --- | --- |
-| `infernux/mcp` | 0.1.20 | Infernux >=0.4.2 | `http://127.0.0.1:9713/mcp` |
+| `infernux/mcp` | 0.2.0 | Infernux >=0.4.3 | `http://127.0.0.1:9713/mcp` |
 
 ## 安装与连接
 
 Infernux 新项目默认带有这个官方插件。已有项目可以在编辑器的**插件**窗口中安装或更新；不需要 Agent 操作时，也可以在同一位置禁用或卸载。
 
-把支持 MCP 的客户端连接到 `http://127.0.0.1:9713/mcp` 即可，不需要凭据。编辑器也会为 Cursor、Claude Code、VS Code、Trae 和 Gemini 写好现成的客户端配置。服务只接受本机连接，默认授予全部能力（可在 `ProjectSettings/mcp_capabilities.json` 中收窄）。如需更换端口，请在启动编辑器前设置 `INFERNUX_MCP_PORT`。
+把支持 MCP 的客户端连接到 `http://127.0.0.1:9713/mcp` 即可，不需要凭据。编辑器也会为 Cursor、Claude Code、VS Code、Trae 和 Gemini 写好现成的客户端配置。服务只接受本机连接，所有工具直接可用，没有权限表或 MCP 工作模式。如需更换端口，请在启动编辑器前设置 `INFERNUX_MCP_PORT`。
 
 Agent 应先调用 `host_session_status`，再读取 `operation_schema_list`。通过 `operation_schema_search` 找到所需能力、读取准确 schema，最后用 `operation_command_execute` 执行。构建等耗时任务使用 `operation_job_submit`，一组顺序明确的操作可以交给 `operation_batch_execute`，减少通信往返。
 
@@ -38,7 +38,7 @@ Agent 应先调用 `host_session_status`，再读取 `operation_schema_list`。�
 
 Python 客户端新增 `session` 模式：每行输入一个 JSON 请求，复用同一个已初始化的 MCP 连接，完成发现、依赖前一步结果的编辑和状态查询。`call` 支持 `--args-file path.json`（`-` 代表标准输入），避免多层 shell 引号。`--timings` 把客户端分阶段耗时写入 stderr，stdout 保持机器可读 JSON。操作失败、批次中部分步骤失败，以及任务失败或取消时，退出码为非零。
 
-[客户端工作流与耗时诊断](package/plugin_pages/operations.zh-CN.md#python-客户端)说明了协议、超时边界和只读基准测试。现有 gateway API、能力白名单与确认要求保持不变，不会自动重试命令。源码改进将在后续打标签发布时进入新安装包，当前发布版本号不变。
+[客户端工作流与耗时诊断](package/plugin_pages/operations.zh-CN.md#python-客户端)说明了协议、超时边界和只读基准测试。所有工具在同一会话中使用，客户端不会自动重试命令。
 
 ## Compute 性能诊断
 
@@ -51,3 +51,7 @@ Python 客户端新增 `session` 模式：每行输入一个 JSON 请求，复�
 ## 许可证
 
 [MIT](LICENSE)。
+
+## 0.2.0 配置变更
+
+项目配置改为 `ProjectSettings/mcp_settings.json`，只保留追踪、连接发现、会话与构建信息、执行限额等设置。旧权限配置、模式切换 API 和 Supervisor 关闭租约直接删除，不做迁移。`host_capabilities` 只描述有哪些工具。关闭编辑器时传入 `host_session_status` 返回的公开 `editor_instance_id`，用于确定目标进程，不是授权凭据。

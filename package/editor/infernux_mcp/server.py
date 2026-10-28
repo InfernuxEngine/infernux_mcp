@@ -133,19 +133,19 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             )
             return False
 
-        from infernux_mcp.capabilities import configure, feature_enabled, is_enabled
-        capability_config = configure(project_path, write_default=True)
+        from infernux_mcp.settings import configure, feature_enabled, is_enabled
+        config = configure(project_path, write_default=True)
         if not is_enabled():
             Debug.log_internal(
                 "Infernux MCP server disabled by "
-                "ProjectSettings/mcp_capabilities.json"
+                "ProjectSettings/mcp_settings.json"
             )
             return False
         from infernux_mcp.session import configure as configure_session
-        session_state = configure_session(project_path, capability_config)
+        session_state = configure_session(project_path, config)
         Debug.log_internal(
             "Infernux MCP session configured: "
-            f"mode={session_state.mode}, build_profile={session_state.build_profile}, "
+            f"build_profile={session_state.build_profile}, "
             f"recording={session_state.recording_enabled}"
         )
         if feature_enabled("session_call_log"):
@@ -185,7 +185,7 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             )
 
         from infernux_mcp.adapter import begin_shutdown_adapter, register_gateways, shutdown_adapter
-        register_gateways(mcp, project_path, capability_config)
+        register_gateways(mcp, project_path, config)
 
         import uvicorn
 

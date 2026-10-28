@@ -21,7 +21,7 @@ def build_capture_operations() -> tuple[Operation, ...]:
         operation(
             "infernux.capture.request",
             OperationKind.COMMAND,
-            "Request an asynchronous Scene, Game, complete Editor, or Camera target_texture PNG for human review.",
+            "Request an asynchronous Scene, Game, complete Editor, or Camera target_texture PNG.",
             _request_capture,
             capability="capture.write",
             input_properties={
@@ -35,7 +35,7 @@ def build_capture_operations() -> tuple[Operation, ...]:
         operation(
             "infernux.capture.status",
             OperationKind.QUERY,
-            "Poll an engine render-target capture without returning pixels.",
+            "Poll a render-target capture and return the PNG file path when available.",
             _capture_status,
             capability="capture.read",
             input_properties={"capture_id": {"type": "integer"}},
@@ -82,17 +82,8 @@ def build_capture_operations() -> tuple[Operation, ...]:
     )
 
 
-def _debug_session():
-    active = session.current()
-    if active.build_profile != "debug_feedback":
-        raise OperationError(
-            "capture.unavailable", "Engine capture requires a debug_feedback session."
-        )
-    return active
-
-
 def _request_capture(source: str = "game", file_name: str = "", camera_component_id: int = 0):
-    active = _debug_session()
+    active = session.current()
     source_name = str(source).strip().casefold()
     if source_name not in {"scene", "game", "editor", "camera"}:
         raise OperationError("operation.invalid_arguments", "source must be scene, game, editor, or camera")
@@ -124,13 +115,12 @@ def _request_capture(source: str = "game", file_name: str = "", camera_component
         "status": "pending_gpu",
         "artifact_uri": os.path.relpath(output, active.artifact_root).replace("\\", "/"),
         "pixel_origin": "engine_render_target",
-        "pixel_access": False,
-        "human_review_only": True,
+        "output_path": output,
     }
 
 
 def _capture_status(capture_id: int):
-    active = _debug_session()
+    active = session.current()
     value = on_editor(
         "infernux.capture.status",
         lambda: EditorAutomationHost.instance().capture_status(capture_id),
@@ -141,8 +131,7 @@ def _capture_status(capture_id: int):
             "capture_id": int(capture_id),
             "artifact_uri": os.path.relpath(output, active.artifact_root).replace("\\", "/") if output else "",
             "pixel_origin": "engine_render_target",
-            "pixel_access": False,
-            "human_review_only": True,
+            "output_path": output,
             "terminal": str(value.get("status", "")) in _TERMINAL,
         }
     )
@@ -152,7 +141,7 @@ def _capture_status(capture_id: int):
 
 
 def _capture_cancel(capture_id: int):
-    _debug_session()
+    session.current()
     cancelled = on_editor(
         "infernux.capture.cancel",
         lambda: EditorAutomationHost.instance().cancel_capture(capture_id),

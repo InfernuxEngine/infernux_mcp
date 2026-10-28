@@ -1,4 +1,4 @@
-"""Configurable capability gates for the Infernux MCP layer."""
+"""Project-local settings for the Infernux MCP toolbox."""
 
 from __future__ import annotations
 
@@ -8,23 +8,16 @@ import os
 import tempfile
 from typing import Any
 
-from infernux.engine.path_utils import resolved_path
+def resolved_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(path))
 
 
-CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")
+CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_settings.json")
 
 
-VALID_PROFILES = frozenset({"developer_assist", "global_validation"})
-
-# MCP is a user-directed development tool: every capability is granted unless
-# the project narrows granted_capabilities (fnmatch patterns, e.g. "*.read").
-DEFAULT_GRANTED_CAPABILITIES: tuple[str, ...] = ("*",)
-
-DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
-    "profile": "developer_assist",
     "write_default_config_on_bootstrap": True,
-    "granted_capabilities": list(DEFAULT_GRANTED_CAPABILITIES),
     "features": {
         "trace_recorder": True,
         "session_call_log": True,
@@ -35,9 +28,6 @@ DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {
         "recording_enabled": False,
         "cmake_configure_preset": "",
         "cmake_build_preset": "",
-        "allowed_project_roots": [],
-        "whl_readonly_source": [],
-        "workaround_allowlist": [],
     },
     "limits": {
         "main_thread_timeout_ms": 30000,
@@ -48,18 +38,18 @@ DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {
     },
 }
 
-_CURRENT_CONFIG: dict[str, Any] = copy.deepcopy(DEFAULT_CAPABILITY_CONFIG)
+_CURRENT_CONFIG: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
 _PROJECT_PATH = ""
 
 
 def configure(project_path: str, *, write_default: bool = True) -> dict[str, Any]:
-    """Activate valid policy; materialize defaults only for a missing file."""
+    """Activate valid settings; materialize defaults only for a missing file."""
     global _CURRENT_CONFIG, _PROJECT_PATH
     root = resolved_path(project_path or "")
     path = config_path(root)
     config = _read_config(path)
     if config is None:
-        config = copy.deepcopy(DEFAULT_CAPABILITY_CONFIG)
+        config = copy.deepcopy(DEFAULT_CONFIG)
         if write_default and config["write_default_config_on_bootstrap"]:
             _write_json_atomically(path, config, create_only=True)
     _PROJECT_PATH, _CURRENT_CONFIG = root, config
@@ -89,9 +79,9 @@ def config_path(project_path: str | None = None) -> str:
     return os.path.join(root, CONFIG_REL_PATH)
 
 
-def load_capability_config(project_path: str) -> dict[str, Any]:
+def load_config(project_path: str) -> dict[str, Any]:
     config = _read_config(config_path(project_path))
-    return copy.deepcopy(DEFAULT_CAPABILITY_CONFIG) if config is None else config
+    return copy.deepcopy(DEFAULT_CONFIG) if config is None else config
 
 
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -108,7 +98,7 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _read_config(path: str) -> dict[str, Any] | None:
-    """None means absent. Existing unreadable or invalid policy must reject."""
+    """None means absent. Existing unreadable or invalid settings must reject."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f, object_pairs_hook=_unique_json_object, parse_constant=_reject_json_constant)
@@ -118,14 +108,14 @@ def _read_config(path: str) -> dict[str, Any] | None:
             raise
         return None
     except ValueError as exc:
-        raise ValueError(f"Invalid MCP capability configuration {path}: {exc}") from exc
+        raise ValueError(f"Invalid MCP settings {path}: {exc}") from exc
 
 
 def write_default_config(project_path: str | None = None) -> str:
     """Write a complete default-on config file if it does not exist yet."""
     path = config_path(project_path)
     if _read_config(path) is None:
-        _write_json_atomically(path, DEFAULT_CAPABILITY_CONFIG, create_only=True)
+        _write_json_atomically(path, DEFAULT_CONFIG, create_only=True)
     return path
 
 
@@ -141,7 +131,7 @@ def save_config(config: dict[str, Any] | None = None, project_path: str | None =
 def _write_json_atomically(path: str, value: dict[str, Any], *, create_only: bool = False) -> None:
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
-    descriptor, temporary_path = tempfile.mkstemp(prefix=".mcp-capabilities-", suffix=".tmp", dir=directory, text=True)
+    descriptor, temporary_path = tempfile.mkstemp(prefix=".mcp-settings-", suffix=".tmp", dir=directory, text=True)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as f:
             json.dump(value, f, indent=2, ensure_ascii=False, allow_nan=False)
@@ -149,7 +139,7 @@ def _write_json_atomically(path: str, value: dict[str, Any], *, create_only: boo
             f.flush()
             os.fsync(f.fileno())
         if create_only:
-            # Publish one complete file without replacing policy created by
+            # Publish one complete file without replacing settings created by
             # another process after the initial read. A collision is an error.
             if os.name == "nt":
                 # Windows rename never replaces an existing destination and
@@ -176,14 +166,8 @@ def feature_enabled(name: str) -> bool:
     return bool((_CURRENT_CONFIG.get("features") or {}).get(name, True))
 
 
-def profile_name() -> str:
-    """Return the active current MCP mode/profile."""
-    profile = str(_CURRENT_CONFIG.get("profile", "developer_assist") or "developer_assist")
-    return profile if profile in VALID_PROFILES else "developer_assist"
-
-
 def session_config() -> dict[str, Any]:
-    """Return the project-local remote-session policy block."""
+    """Return the project-local remote-session settings block."""
     value = _CURRENT_CONFIG.get("session") or {}
     return copy.deepcopy(value if isinstance(value, dict) else {})
 
@@ -201,19 +185,14 @@ def _normalized_config(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("configuration must be a JSON object")
     source = config
-    normalized = copy.deepcopy(DEFAULT_CAPABILITY_CONFIG)
+    unknown = set(source) - set(DEFAULT_CONFIG)
+    if unknown:
+        raise ValueError(f"Unknown MCP settings: {sorted(unknown)}")
+    normalized = copy.deepcopy(DEFAULT_CONFIG)
     for key in ("enabled", "write_default_config_on_bootstrap"):
         if key in source:
             _validate_value(key, source[key], bool)
             normalized[key] = source[key]
-    profile = source.get("profile", normalized["profile"])
-    if not isinstance(profile, str) or profile not in VALID_PROFILES:
-        raise ValueError(f"profile must be one of {sorted(VALID_PROFILES)}")
-    normalized["profile"] = profile
-    if "granted_capabilities" in source:
-        granted = source["granted_capabilities"]
-        _validate_value("granted_capabilities", granted, list)
-        normalized["granted_capabilities"] = list(dict.fromkeys(granted))
     for section in ("features", "session", "limits"):
         if section not in source:
             continue
@@ -223,6 +202,9 @@ def _normalized_config(config: dict[str, Any]) -> dict[str, Any]:
         schema = {key: type(value) for key, value in normalized[section].items()}
         if section == "session":
             schema.update(session_id=str, managed_checkpoints_required=bool)
+        unknown = set(values) - set(schema)
+        if unknown:
+            raise ValueError(f"Unknown MCP {section} settings: {sorted(unknown)}")
         for key, expected in schema.items():
             if key in values:
                 _validate_value(f"{section}.{key}", values[key], expected)
