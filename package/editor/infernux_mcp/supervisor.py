@@ -950,6 +950,19 @@ class SupervisorSession:
                 timeout_seconds=timeout_seconds,
             )
 
+    def _stop_editor_for_checkpoint(self, previous: dict[str, Any], *, timeout_seconds: float) -> None:
+        if previous["player_running"]:
+            raise RuntimeError("Stop the standalone validation Player before changing a checkpoint.")
+        if not previous["editor_running"]:
+            return
+        self._verify_attached_editor(timeout_seconds=timeout_seconds)
+        project = self._read_project_info(timeout_seconds=timeout_seconds)
+        if (project.get("active_scene") or {}).get("dirty"):
+            raise RuntimeError("Save the active scene before changing a checkpoint.")
+        if project.get("play_state") != "edit":
+            raise RuntimeError("Return the Editor to edit mode before changing a checkpoint.")
+        self.stop_editor(timeout_seconds=timeout_seconds)
+
     def _create_checkpoint_locked(
         self,
         checkpoint_id: str,
@@ -970,9 +983,7 @@ class SupervisorSession:
         }
         _append_json_line(self.checkpoint_history_path, event)
         try:
-            event["preflight"] = self._preflight_handoff(timeout_seconds=timeout_seconds)
-            if previous["editor_running"]:
-                self.stop_editor(timeout_seconds=timeout_seconds)
+            self._stop_editor_for_checkpoint(previous, timeout_seconds=timeout_seconds)
             self.managed_checkpoints_required = True
             self.prepare_project()
             manifest = checkpoint_store.create_checkpoint(
@@ -1055,9 +1066,7 @@ class SupervisorSession:
         }
         _append_json_line(self.checkpoint_history_path, event)
         try:
-            event["preflight"] = self._preflight_handoff(timeout_seconds=timeout_seconds)
-            if previous["editor_running"]:
-                self.stop_editor(timeout_seconds=timeout_seconds)
+            self._stop_editor_for_checkpoint(previous, timeout_seconds=timeout_seconds)
             proof = checkpoint_store.restore_checkpoint(
                 self.project_root,
                 self.artifact_root,
