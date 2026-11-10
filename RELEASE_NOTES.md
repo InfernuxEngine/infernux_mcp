@@ -1,3 +1,8 @@
+# 0.2.1
+
+- Restore supervisor checkpoint creation and restoration. Stop the attached Editor after confirming its active scene is saved and it is in edit mode.
+- Publish the checkpoint changes under a new package version so cached 0.2.0 archives keep their original identity.
+
 # 0.2.0 — Unrestricted local toolbox (Infernux >=0.4.3)
 
 - Remove MCP capability grants, developer/validation modes, mode-switch restarts and shutdown leases.

@@ -17,7 +17,7 @@ The official Model Context Protocol plugin for [Infernux](https://github.com/Che
 
 | Package | Version | Compatible engine | Endpoint |
 | --- | --- | --- | --- |
-| `infernux/mcp` | 0.2.0 | Infernux >=0.4.3 | `http://127.0.0.1:9713/mcp` |
+| `infernux/mcp` | 0.2.1 | Infernux >=0.4.3 | `http://127.0.0.1:9713/mcp` |
 
 ## Install and connect
 
