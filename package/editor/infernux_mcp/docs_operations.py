@@ -8,6 +8,16 @@ from infernux_mcp.operation_support import operation
 
 
 _GUIDES = {
+    "shader-authoring": {
+        "title": "Static GPU author files and diagnostics",
+        "body": "GPU files import infernux.shader, use native f32/i32/u32, vector and matrix declarations, and reference static ShaderLib functions. They are parsed, never executed as host Python; NumPy, Torch and host imports are not allowed. Use infernux.shader.check with a file or unsaved draft, repair its structured path/range/code/phase diagnostics, then infernux.shader.reload to publish. Parameter values use the declared type; target bindings and matrix/array packing come from native Slang reflection. Ordinary parameters do not require shader recompilation. The current implemented author domain is shader.fullscreen; stage, surface and compute author tools will be added with their native contracts.",
+        "tags": ("shader", "slang", "shaderlib", "diagnostics", "parameters"),
+    },
+    "python-automation": {
+        "title": "Custom editor Python",
+        "body": "infernux.editor.python.execute runs code on the existing editor owner with inx, host and project_root. Assign a JSON-serializable result. Use the engine's compute/nn and asset APIs; it does not create another engine, thread owner, shader interpreter, or permission mode. Shader source itself goes through shader.check and is never exec'ed.",
+        "tags": ("python", "compute", "jit", "automation"),
+    },
     "discovery": {
         "title": "Discovering operations",
         "body": "Search schemas by task or domain, fetch the selected full schema, then invoke its stable dotted operation ID through the matching query, command, or workflow gateway.",

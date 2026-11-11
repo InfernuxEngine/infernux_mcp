@@ -2,54 +2,44 @@
 
 from __future__ import annotations
 
-from importlib import metadata as importlib_metadata
 import json
 import os
 from pathlib import Path
 import subprocess
 import time
-import tomllib
 from typing import Any
 
 from infernux.engine.path_utils import relative_path, resolved_path
+from infernux.version import ENGINE_COMPATIBILITY_VERSION
 
 
 def capture_build_identity(
     options: dict[str, Any], build_profile: str
 ) -> dict[str, Any]:
     source_root = _find_source_root()
+    from infernux.lib import _Infernux
+    native_module = resolved_path(_Infernux.__file__)
     return {
         "captured_at": time.time(),
         "source_root": source_root,
-        "package_version": _read_package_version(source_root),
+        "package_version": ENGINE_COMPATIBILITY_VERSION,
+        "native_module": native_module,
         "git": _git_identity(source_root),
-        "cmake": _cmake_identity(source_root, options, build_profile),
+        "cmake": _cmake_identity(source_root, options, build_profile, native_module),
     }
 
 
 def _find_source_root() -> str:
-    module_path = Path(resolved_path(__file__))
+    # An installed MCP package can live in an unrelated game project. The
+    # running engine, rather than the transport plugin, owns build identity.
+    import infernux
+    module_path = Path(resolved_path(infernux.__file__))
     for candidate in (module_path.parent, *module_path.parents):
         if (candidate / "pyproject.toml").is_file() and (
             candidate / "CMakePresets.json"
         ).is_file():
             return str(candidate)
     return ""
-
-
-def _read_package_version(source_root: str) -> str:
-    pyproject = Path(source_root) / "pyproject.toml" if source_root else None
-    if pyproject and pyproject.is_file():
-        try:
-            with open(pyproject, "rb") as stream:
-                project = tomllib.load(stream).get("project") or {}
-            return str(project.get("version", "") or "")
-        except (OSError, tomllib.TOMLDecodeError):
-            pass
-    try:
-        return str(importlib_metadata.version("Infernux") or "")
-    except importlib_metadata.PackageNotFoundError:
-        return ""
 
 
 def _git_identity(source_root: str) -> dict[str, Any]:
@@ -86,16 +76,14 @@ def _run_git(source_root: str, *args: str) -> str | None:
 
 
 def _cmake_identity(
-    source_root: str, options: dict[str, Any], build_profile: str
+    source_root: str, options: dict[str, Any], build_profile: str, native_module: str
 ) -> dict[str, Any]:
     default_preset = "debug" if build_profile == "debug_feedback" else "release"
     configured = str(options.get("cmake_configure_preset", "") or "").strip()
     build = str(options.get("cmake_build_preset", "") or "").strip()
-    cache_path = (
-        os.path.join(source_root, "out", "build", "CMakeCache.txt")
-        if source_root
-        else ""
-    )
+    native_directory = Path(native_module).parent
+    cache = native_directory.parent / "CMakeCache.txt"
+    cache_path = str(cache) if cache.is_file() else ""
     build_type = ""
     if cache_path and os.path.isfile(cache_path):
         try:
@@ -120,6 +108,7 @@ def _cmake_identity(
         "presets_path": presets_path,
         "cache_path": _relative(source_root, cache_path) if cache_path else "",
         "cache_configured_build_type": build_type,
+        "native_configuration": native_directory.name if cache_path else "",
     }
 
 

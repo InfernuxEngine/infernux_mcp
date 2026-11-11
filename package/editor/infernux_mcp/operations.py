@@ -22,6 +22,8 @@ from infernux_mcp.operation_support import OWNER, on_editor, operation
 from infernux_mcp.particle_operations import build_particle_operations
 from infernux_mcp.player_operations import build_player_operations
 from infernux_mcp.runtime_operations import build_runtime_operations
+from infernux_mcp.shader_operations import build_shader_operations
+from infernux_mcp.python_operations import build_python_operations
 from infernux_mcp.ui_operations import build_ui_operations
 
 
@@ -116,6 +118,8 @@ def build_operations(project_path: str) -> tuple[Operation, ...]:
         + build_particle_operations()
         + build_camera_operations()
         + build_runtime_operations()
+        + build_shader_operations()
+        + build_python_operations(project_path)
         + build_input_operations()
         + build_ui_operations()
         + build_capture_operations()

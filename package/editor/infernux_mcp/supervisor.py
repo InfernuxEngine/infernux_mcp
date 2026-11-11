@@ -44,24 +44,6 @@ CHECKPOINT_STATUS_OPERATION = "infernux.mcp.checkpoint.status"
 ATTEMPT_START_OPERATION = "infernux.mcp.attempt.start"
 
 
-def _source_gpu_jit_vendor_dir() -> str:
-    """Expose the source checkout's staged compiler to Supervisor children.
-
-    Installed wheels carry the private frontend beside ``Infernux`` and need
-    no environment override. A source checkout, however, keeps that payload
-    in the CMake staging tree; the MCP Supervisor must pass the same explicit
-    path that the visible developer launcher uses, otherwise the first GPU
-    kernel fails only after Play starts.
-    """
-
-    configured = str(os.environ.get("INFERNUX_GPU_JIT_VENDOR_DIR", "") or "").strip()
-    if configured:
-        return configured
-    repository_root = Path(__file__).resolve().parents[6]
-    candidate = repository_root / "out" / "build" / "windows-msvc-release" / "gpu-jit-wheel" / "infernux" / "_compiler" / "taichi" / "_vendor" / "taichi"
-    return str(candidate) if (candidate / "__init__.py").is_file() else ""
-
-
 def _source_python_root() -> str:
     """Return the checkout's Python package root for source-editor children.
 
@@ -428,9 +410,6 @@ class SupervisorSession:
         if source_python:
             existing_python = str(env.get("PYTHONPATH", "") or "").strip()
             env["PYTHONPATH"] = source_python + (os.pathsep + existing_python if existing_python else "")
-        vendor_dir = _source_gpu_jit_vendor_dir()
-        if vendor_dir:
-            env["INFERNUX_GPU_JIT_VENDOR_DIR"] = vendor_dir
         self._mcp_ready = False
         self._editor_log_handle = open(self.editor_log_path, "a", encoding="utf-8", newline="\n")
         self._process = subprocess.Popen(
