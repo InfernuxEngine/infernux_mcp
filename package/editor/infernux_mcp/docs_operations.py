@@ -10,8 +10,40 @@ from infernux_mcp.operation_support import operation
 _GUIDES = {
     "shader-authoring": {
         "title": "Static GPU author files and diagnostics",
-        "body": "GPU files import infernux.shader, use native f32/i32/u32, vector and matrix declarations, and reference static ShaderLib functions. They are parsed, never executed as host Python; NumPy, Torch and host imports are not allowed. Use infernux.shader.check with a file or unsaved draft, repair its structured path/range/code/phase diagnostics, then infernux.shader.reload to publish. Parameter values use the declared type; target bindings and matrix/array packing come from native Slang reflection. Ordinary parameters do not require shader recompilation. The current implemented author domain is shader.fullscreen; stage, surface and compute author tools will be added with their native contracts.",
-        "tags": ("shader", "slang", "shaderlib", "diagnostics", "parameters"),
+        "body": (
+            "GPU assets use .vert.py, .frag.py, .shadingmodel.py and .shaderlib.py. Import infernux.shader; "
+            "native scalar/vector/matrix types and typed static library functions are compiled by Slang, never "
+            "executed as host Python. NumPy, Torch and host imports do not belong in GPU author files. "
+            "A shader.vert deforms VertexData; shader.frag returns raw mesh color; shader.surface fills SurfaceData; "
+            "shader.shadingmodel evaluates light; shader.fullscreen processes graph images and buffers. "
+            "Use shader_id for logical lookup, with slash-separated menu groups, and hidden=True for implementation "
+            "assets. Materials select vertex and fragment independently; do not put vertex_shader in a fragment. "
+            "Declare mesh values with shader.material and fullscreen values with shader.parameter. For example, "
+            "smoothness = shader.material.float(default=0.5, range=(0.0, 1.0)) gives an Inspector slider. "
+            "Use infernux.shader.check for a file or unsaved draft, repair source/range/code/phase diagnostics, then "
+            "infernux.shader.reload to publish. The schema operation returns logical parameters and input ports. "
+            "Slang reflection owns layouts and bindings; ordinary value changes do not recompile the shader. "
+            "The current Deferred evaluator registers built-in PBR/Unlit/Toon; project lighting models use "
+            "Forward/Forward+ until registered with a compatible GBuffer representation."
+        ),
+        "tags": ("shader", "slang", "shaderlib", "surface", "material", "diagnostics", "parameters"),
+    },
+    "shader-resources": {
+        "title": "Typed shader graph resources",
+        "body": (
+            "A fullscreen author declares ports with shader.input(semantic, resource_type); the graph binds the "
+            "field name through set_texture or set_buffer. Color2D, Depth2D, UInt2D and History2D describe 2D inputs; "
+            "Color3D samples a volume. Integer images use load, not filtered sample. Color2DMS/Depth2DMS/UInt2DMS "
+            "retain individual multisample values: use load(image, pixel, sample_index), dimensions(image) and "
+            "sample_count(image). shader.multisample_input exposes sample_index for per-sample fragment invocation; "
+            "ordinary fragment_input retains pixel-rate execution. Single-sample images use dimensions(image, mip). "
+            "Buffer[shader.vec3] and other 32-bit float/int/uint scalar or vector types read tightly packed compute "
+            "storage. Indexing reads an element; len reports the logical view count. graph.import_buffer accepts "
+            "initialized GPU values and subviews without a hidden readback. Engine-owned offsets, descriptor "
+            "alignment, producer dependencies and leases preserve the same allocation; do not pad vec3 to 16 bytes. "
+            "Buffer ports are read-only in graphics; make writes in Compute. Host uploads/readbacks remain explicit."
+        ),
+        "tags": ("shader", "buffer", "compute", "texture", "volume", "multisample", "resources"),
     },
     "python-automation": {
         "title": "Custom editor Python",
