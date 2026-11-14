@@ -28,6 +28,35 @@ _GUIDES = {
         ),
         "tags": ("shader", "slang", "shaderlib", "surface", "material", "diagnostics", "parameters"),
     },
+    "shader-material-values": {
+        "title": "Material values, sliders and matrix coordinates",
+        "body": (
+            "Declare Inspector fields in a mesh author with shader.material. "
+            "smoothness = shader.material.float(default=0.5, range=(0.0, 1.0)) creates a scalar slider. "
+            "bool, int, uint, vec2/vec3/vec4, color, mat3/mat4 and texture_2d retain their declared types. "
+            "uint spans 0 through 4294967295; a bool is a bool rather than a floating-point flag in the host API. "
+            "Material.set_float, set_bool and set_uint update values through the material owner. "
+            "Material.set_matrix and get_matrix use two-dimensional row/column coordinates for both 3x3 and 4x4; "
+            "ordinary Python sequences are sufficient. Raw material documents store flat matrix columns, so use "
+            "the API when changing matrices. Compiler reflection owns matrix stride and target packing; never "
+            "pad a mat3 or reinterpret it as a mat4. Boolean fields use the Inspector's shared right-hand checkbox. "
+            "Changing a value or renderer override updates parameter data without recompiling the program."
+        ),
+        "tags": ("shader", "material", "parameters", "slider", "bool", "uint", "matrix", "inspector"),
+    },
+    "shader-clock-and-motion": {
+        "title": "Engine clocks and vertex motion",
+        "body": (
+            "shader.frame_time() and shader.frame_delta_time() read the engine-owned rendering clock in seconds. "
+            "Do not upload a Python timer as a material value every frame. shader.view() and shader.camera() "
+            "read the same view's engine-owned output settings and canonical camera matrices. "
+            "In shader.vert, use VertexContext.time for deformation: the engine evaluates the current and "
+            "previous geometry samples for motion vectors. A shared shaderlib function can accept that sample "
+            "time as an ordinary typed argument. Keep geometry deformation shared across visible, depth, "
+            "shadow, picking and motion passes instead of inventing a clock or vertex implementation per pass."
+        ),
+        "tags": ("shader", "time", "clock", "camera", "vertex", "motion", "shaderlib"),
+    },
     "shader-resources": {
         "title": "Typed shader graph resources",
         "body": (
