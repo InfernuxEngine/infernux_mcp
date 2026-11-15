@@ -28,6 +28,26 @@ _GUIDES = {
         ),
         "tags": ("shader", "slang", "shaderlib", "surface", "material", "diagnostics", "parameters"),
     },
+    "shader-libraries": {
+        "title": "Shader library functions and stage requirements · 着色器函数库",
+        "body": (
+            "Use infernux.shader.list to find registered IDs, GUIDs, stages, domains and hidden assets without compiling them. "
+            "infernux.shader.library.search queries the current project's typed ShaderLib exports. It returns each source "
+            "signature, documentation, path and per-function requirements. geometry.rotate_axis uses radians and the "
+            "right-hand rule; shapes.cross_mask returns antialiased coverage. noise provides value, gradient, cellular "
+            "and fractal functions; uv provides rotation, flipbook and triplanar helpers; camera reconstructs position "
+            "and positive eye depth; color provides sRGB/linear conversion and HDR white balance. "
+            "Import a helper in a GPU file with from infernux.shader.lib.geometry import rotate_axis, or use relative "
+            "ShaderLib imports in a project. These imports are resolved statically rather than executed in Python. "
+            "derivatives, implicit_lod and discard require the fragment stage. Vertex texture sampling uses explicit "
+            "sample_level or sample_grad. Requirements follow the called function through imported and local helpers; "
+            "an unrelated fragment helper does not restrict every function in its library. "
+            "infernux.shader.create uses the Project asset transaction for vertex, fragment, shadingmodel and library "
+            "templates. Use shader.check before shader.reload. The native compiler owns layouts, bindings and source diagnostics. "
+            "函数库、顶点、片段、噪声、深度、法线、纹理与阶段错误均以当前引擎的实际声明和源码为准。"
+        ),
+        "tags": ("shader", "shaderlib", "library", "function", "vertex", "采样", "函数库", "噪声", "深度"),
+    },
     "shader-material-values": {
         "title": "Material values, sliders and matrix coordinates",
         "body": (
