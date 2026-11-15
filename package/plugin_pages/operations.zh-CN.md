@@ -1,64 +1,99 @@
-# 使用
+# Infernux MCP
 
-这个包只露出很少几个 MCP 入口。真正能干的事都在 operation 目录里。
+需要包含公共 Automation Host 的引擎构建；正式发布时再确定最低发行版本。
 
-![调用 operation](media/agent_loop.png)
+独立运行的标准 MCP 服务。场景、资源、输入、截图、构建和 Player 控制由引擎公共 Host
+提供；本插件负责 MCP 连接、工具发现、资源映射、查询汇报和常用流程。
+关闭本插件后，引擎的公共自动化能力仍然存在。
 
-1. 搜一下要用的 operation。
-2. 把它的参数说明读完，别猜字段名。
-3. 按类型调用：查、改，或丢到后台跑。
-4. 后面继续用它返回的 ID。资产是 GUID，场景对象以查询结果为准。
+## 安装和连接
 
-改不熟的组件字段前，先问 `infernux.scene.component.schema`。
+在编辑器插件管理器安装并启用 `infernux/mcp`。插件启动独立进程，自动选择空闲的
+本机端口。连接地址记录在项目的 `Cache/Automation/mcp.json`，引擎公共接口在旁边的
+`engine.json`。没有固定默认端口，也没有权限模式和工具白名单。
 
-`infernux.scene.open` 和 `infernux.scene.reload` 返回 `scheduled: true` 表示加载已排队。随后查询 `infernux.project.info`：`active_scene.last_load` 包含请求的 `path`、`status`（`pending`、`loading`、`loaded` 或 `failed`）以及具体 `error`。确认该路径已 `loaded` 后再编辑新场景，同时检查 `active_scene.document_state`：若为 `conflict`，表示加载期间磁盘再次变化，已加载的场景并非最新磁盘版本，需要用户处理外部冲突。这两个操作即使用 MCP 后台任务执行，任务完成也只代表排队完成；校验失败时原场景仍保持不变。
+也可以使用标准 stdio：
 
-`active_scene.document_state` 会显示外部文件冲突状态。保存前通过编辑器的“从磁盘重新加载”“保留本地修改”或“另存为副本”处理冲突。重载与启动使用相同的严格场景格式校验，弹窗会显示解析错误；按错误提示修正文件后再加载。组件 `data` 不应包含 `__type_name__`、`__component_id__` 等运行时元数据。外部编辑器可以使用原子文件替换保存脚本和资产。
-
-打 Player 这种慢活用 `operation_job_submit`，再用 `operation_job_status` 看进度，别死等第一次调用。
-
-## Python 客户端
-
-编辑器会把它拥有的 `infernux-editor` 配置重新生成为直连 `http://127.0.0.1:9713/mcp` 的 streamable-HTTP 配置。有效 JSON 中的其他服务器和设置会保留。JSONC、损坏 JSON 或非对象文档不会被覆盖，Console 会报告问题，其他客户端文件仍会更新；这类文件可按 `connection_info()["clients"]` 中的对应配置手动合入。
-
-服务只监听本机，不需要凭据。`/health` 只报告就绪状态，不能用于 MCP 调用。
-
-使用编辑器的同一个 Python 环境。在插件源码目录中，把 `package/editor` 加到 `PYTHONPATH`，保留原有条目；Bash 示例：`export PYTHONPATH="$PWD/package/editor${PYTHONPATH:+:$PYTHONPATH}"`。项目中已安装的插件对应路径为 `Packages/infernux/mcp/editor`。
-
-```bash
-python -m infernux_mcp.client --timings call host_session_status
-python -m infernux_mcp.client call operation_schema_search --args-file search.json
-python -m infernux_mcp.client --timeout 30 --timings session
+```powershell
+python -m infernux_mcp --project E:/Games/MyGame
 ```
 
-全局选项放在 `call`、`session`、`list-tools` 或 `describe` 之前。多个编辑器使用 `--endpoint http://127.0.0.1:PORT/mcp` 选择地址。`search.json` 是 UTF-8 JSON 对象，例如 `{"query":"scene object create","limit":10}`。`--args-file -` 从标准输入读取，与 `--args` 互斥；无效 JSON 不会发出调用。
+引擎环境自带轻量 Automation SDK。单独的服务环境需要安装 `package/requirements.txt`，
+将 `package/editor` 加入 `PYTHONPATH`，并安装引擎源码 `python/` 子项目中的轻量 SDK。
+导入服务和 SDK 不会加载原生引擎，也不要求显卡。
 
-`session` 每行接收一个请求，同一个连接保持打开：
+为 Claude Code、Codex、DSH、WorkBuddy 生成对应格式的配置：
 
-```json
-{"id":"status","tool":"host_session_status","arguments":{}}
-{"id":"schema","tool":"operation_schema_get","arguments":{"operation":"infernux.scene.object.create"}}
+```powershell
+python -m infernux_mcp.connect --client claude --project E:/Games/MyGame --output E:/Games/MyGame/.mcp.json
+python -m infernux_mcp.connect --client codex --project E:/Games/MyGame --output <实际的config.toml>
+python -m infernux_mcp.connect --client dsh --project E:/Games/MyGame --output <实际的plugins.yaml>
+python -m infernux_mcp.connect --client workbuddy --project E:/Games/MyGame --output E:/Connectors/Infernux/mcp.json
 ```
 
-每次请求完成立即输出一行：`{"id":"status","result":{"ok":true,"data":{...}}}`。只接受 `id`、`tool`、`arguments`；`id` 可省略，也可为字符串、整数或 null。依赖前一步结果的命令应先读取响应，复用返回的物体 ID 与资源 GUID。EOF 关闭连接，空行忽略。无效记录或失败调用会输出错误，后续已提供的记录仍会处理。任一记录失败时最终退出码为 1，全部成功为 0，Ctrl+C 为 130。单次 `call` 遇到操作错误、批次中部分步骤失败，或任务失败/取消时也返回 1，stdout 保留服务端原始 envelope，不把操作结果里的任意字段误判为 gateway 错误。
+不填 `--output` 就只打印配置。Claude、Codex、DSH 只替换指定名称的服务，保留其它服务和设置的值。
+WorkBuddy 输出是独立 Infernux Connector 的 `mcp.json`；其[官方 Connector 格式](https://open.workbuddy.cn/en/docs/connector)
+只取该文件里的第一个服务。目标已有其它服务时会拒绝且不改写文件，请为 Infernux 使用独立 Connector 文件；
+只有 Infernux 自身服务的文件可以正常更新。
+合并 TOML 或 YAML 会规范化格式且不保留注释；DSH 的 `!!js` 等标签及其内容原样保留，不执行表达式。不猜测客户端的
+私人目录，也不读取聊天数据库。各客户端格式和官方参考链接见英文说明。
 
-所有本机工具在同一会话中直接可用，无需权限表或 MCP 模式切换；调用仍按 schema 校验参数，并走引擎正常的撤销和执行流程。CLI 不会重新发出失败命令，也不会新建客户端来重试它。超时或断连不能证明命令已取消或回滚，重试前先查看项目或任务状态。长任务仍应通过 `operation_job_submit` 提交再查询。`--timeout` 限制 MCP 初始化和每次请求，不限制整个会话或等候下一行输入的空闲时间；传输清理可能增加总耗时。
+## 使用流程
 
-已完成的请求结果会在断开连接前写入 stdout。断连错误单独写入 stderr，并使退出码为非零；它不会抹掉 stdout 中的请求结果。
+先调用 `help` 和 `engine_status`，再用 `operation_search` 找能力、`operation_schema`
+读参数，通过 `operation_call` 调用。`operation_batch` 按顺序执行，出错即停，已经发生的
+修改不会自动撤销。长任务使用 `operation_submit` 和 `operation_job`；取消会返回实际
+是否成功，不假称已经运行的操作被撤销。
 
-## 耗时诊断
+`load_and_capture` 会等待场景真实加载完成，再等待引擎渲染截图完成，支持 MCP 后台任务
+和超时。截图来自引擎渲染目标，不是系统桌面。工具也能通过公共 Host 控制输入、构建
+和管理 Debug Player。
 
-`--timings` 把 JSON 计时写入 stderr，不包含参数和结果内容。`client_create` 包含传输模块的延迟导入；`connect_initialize` 合并连接与 MCP 初始化；`request` 合并通信、编辑器主线程排队和执行；`serialize` 是本地 JSON 编码，`disconnect` 和 `total` 分别表示清理和 CLI 生命周期。`total` 不包含 Python 解释器/模块启动；比较独立进程时需要进程墙钟时间。客户端计时无法单独区分编辑器排队与执行，应结合错误码、控制台和引擎日志判断。输入、连接初始化和请求阶段的错误会分别标注。
+`infernux.plugin.*` 提供安装、兼容发行查询、覆盖更新、启停、卸载和重载；
+`infernux.theme.list/select/refresh` 提供主题公共入口。它们与 GUI、轻量 SDK CLI
+调用同一引擎服务，不复制安装器。更新未指定版本时选最高兼容发行，也可指定
+`release_tag` 或本地 `source`；返回实际激活错误或重启要求。
 
-编辑器已运行并持续 tick 后，可在插件源码目录执行：
+资源入口是 `infernux://catalog`、`infernux://operation/{operation}`、
+`infernux://query/{query_id}`。引擎插件启停会更新实际能力目录。
 
-```bash
-python scripts/benchmark_client.py --endpoint http://127.0.0.1:9713/mcp --samples 3
-python -m unittest discover -s test -p 'test_client*.py' -v
+## 查询和多轮汇报
+
+`observe` 将一个查询绑定到场景、资源、运行状态、日志、截图完成或自定义信号。
+有信号才重新计算，不每帧查询。`observation` 可读取或等待变化；用 `stop_observing`
+释放订阅。
+报告次数耗尽会释放其受管查询，provider 停用或被替换时旧查询停止。每个 MCP 协议
+会话分别拥有自己的订阅；关闭会话时清理，不影响其它客户端，也不取消已经运行的
+引擎 job。空闲连接自动续租；服务被意外终止后，观察租约到期清理，不残留永久观察。
+
+`reports` 指定汇报次数。`changes` 和 `adaptive` 在结果变化时汇报；`turns` 按真实用户
+对话轮次汇报。同一轮的多个工具调用不会重复扣次数。使用稳定的 `consumer` 标记会话。
+管理对话的 harness 可以每轮调用 `conversation_turn` 或 SDK 的 `reports`，再把结果放入
+该轮上下文。MCP 通知本身无法强制模型开始新一轮推理。
+
+Claude Code 可以配置公开的 UserPromptSubmit hook：
+
+```powershell
+python -m infernux_mcp.connect --client claude --project E:/Games/MyGame --hook-output E:/Games/MyGame/.claude/settings.json
 ```
 
-基准只读取会话状态、紧凑 schema 目录、运行状态及一个 20 次查询的批次，比较独立进程墙钟时间与复用连接的请求耗时，输出原始阶段与中位数。不修改项目设置，不重试失败调用。HTTP 测试需要 `package/requirements.txt`；纯客户端单元测试无需引擎或第三方依赖（`-p test_client.py`）。这些数据不是渲染性能，也不能代替场景载入/捕获完成的确认。无窗口宿主可以编辑和查看场景，但截图验证需要图形编辑器。
+hook 将 `infernux_consumer` 和查询结果带到用户下一轮输入中。创建 `observe` 时传入这个
+consumer。按轮计数需要宿主提供稳定的 `prompt_id`、`request_id` 或 `event_id`；基础
+hook 格式未承诺提供该 ID。缺少时只递送变化报告，并如实说明不支持自动 turns 计数，
+不会把 hook 调用次数或随机 UUID 当用户轮。管理真实对话的宿主也可通过
+`conversation_turn` 或 SDK 传入自己的真实轮 ID。其它客户端均可使用标准工具、资源和显式轮次入口；完全没有工具调用的轮次
+能否自动注入结果，取决于客户端是否提供真实输入 hook，插件不会修改其私有状态。
 
-## 项目设置
+## 生命周期和错误
 
-`ProjectSettings/mcp_settings.json` 配置追踪、连接发现、会话与构建信息、超时等。没有权限表或 MCP 工作模式。0.2.0 直接删除旧权限配置与模式切换 API，不做迁移。场景编辑、脚本、输入、语义 UI、截图和 Player 工具在同一会话中使用。截图结果会返回 `output_path`，可以直接查看 PNG。关闭编辑器时传入 `host_session_status` 返回的公开 `editor_instance_id`，用于确定目标进程。
+网络断开或写操作超时后不自动重发。编辑器重启后使用 `engine_connect` 显式重连，
+只改变发起该请求的会话绑定，其它客户端保持各自实例。
+脚本失败会停用当前贡献和服务，修复源码后重新构造，不保留旧实现继续运行。
+资源和普通插件错误留在编辑器内报告，不把失败伪装成成功。
+
+独立 stdio 和 HTTP 进程通过文件事件监视其实际 MCP 与轻量 SDK 的 Python 源码目录。
+保存、新增或删除当前源码会停止该进程、释放观察，并在 stderr 说明需要重启。
+它不会热执行替换代码、重发请求或取消已提交的引擎 job；修复或主动撤销源码后重启连接。
+
+使用 `python package.py build dist/infernux.mcp.inxpkg` 打包。安装内容只有 `package/`，
+测试、CI 和外层脚本不会进入游戏工程。
