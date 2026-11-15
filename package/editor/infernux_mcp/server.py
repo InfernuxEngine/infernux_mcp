@@ -1,555 +1,377 @@
-"""Embedded HTTP MCP server for Infernux Editor."""
-
+"""Independent standard MCP service backed by the public Automation SDK."""
 from __future__ import annotations
 
-import json
-import os
-import threading
-import time
-import socket
-from contextvars import copy_context
+import asyncio
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Optional
-
-from infernux.debug import Debug
-from infernux.engine.path_utils import resolved_path
-from infernux.runtime_services import (
-    get_runtime_service,
-    install_runtime_service,
-    remove_runtime_service,
-)
-
-HOST = "127.0.0.1"
-PORT = 9713
-PATH = "/mcp"
-HEALTH_PATH = "/health"
-SERVER_NAME = "Infernux Editor"
-_RUNTIME_SERVICE_NAME = "infernux.editor.mcp.http"
-_TRANSPORT_CONTRACT = 2
+from pathlib import Path
+import json
+import anyio
+from fastmcp import FastMCP, Context
+from fastmcp.server.middleware import Middleware
+from fastmcp.server.tasks.context import get_task_session_id
+from infernux_automation import AutomationClient, AutomationError
 
 
 @dataclass
-class _ServerState:
-    project_path: str
-    host: str
-    port: int
-    mcp: object
-    transport: object
-    adapter_shutdown: object
-    transport_contract: int = _TRANSPORT_CONTRACT
-    adapter_begin_shutdown: object = None
-    thread: Optional[threading.Thread] = None
-    error: BaseException | None = None
-    stop_requested: threading.Event = field(default_factory=threading.Event)
-    stopped: threading.Event = field(default_factory=threading.Event)
-    reaper_started: threading.Event = field(default_factory=threading.Event)
-    cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def matches(self, project_path: str, host: str, port: int) -> bool:
-        return (
-            resolved_path(project_path) == resolved_path(self.project_path)
-            and str(host) == self.host
-            and int(port) == self.port
-        )
-
-    def is_alive(self) -> bool:
-        thread = self.thread
-        return thread is not None and thread.is_alive()
+class _EngineSession:
+    identity: str | None = None
+    client: AutomationClient | None = None
+    observing: bool = False
+    closed: bool = False
+    pulse: asyncio.Task | None = None
+    protocol_ids: set[str] = field(default_factory=set)
 
 
-_lifecycle_lock = threading.RLock()
+def create_server(project, *, stopping=None):
+    mcp = FastMCP("Infernux", instructions=(
+        "Use operation_search and operation_schema to discover current engine capabilities. "
+        "World edits, input, builds, captures and observations run through the engine's public Host. "
+        "Observe uses actual domain signals. Turn reports require a real conversation_turn or hook; "
+        "tool calls do not count as user turns. Failed writes are never replayed automatically."))
+    sessions = {}
+    session_scope = ContextVar("infernux_mcp_session", default=None)
 
+    # Docket restores the standard MCP task snapshot, not arbitrary ContextVars.
+    # Bind that snapshot's protocol session to the same owner as normal calls.
+    class SessionBinding(Middleware):
+        async def on_request(self, context, call_next):
+            if stopping is not None and stopping.is_set():
+                raise AutomationError("mcp.service_stopped", "MCP source changed; restart the service to load current code")
+            owner = session_scope.get()
+            if owner is not None and context.fastmcp_context is not None:
+                identity = context.fastmcp_context.session_id
+                owner.identity = identity
+                owner.protocol_ids.add(identity)
+                sessions[identity] = owner
+            return await call_next(context)
 
-def _active_state() -> _ServerState | None:
-    state = get_runtime_service(_RUNTIME_SERVICE_NAME)
-    # Do not use isinstance here. The service intentionally survives unloading
-    # and re-importing this plugin module, so its class may belong to the prior
-    # module generation.
-    if state is None:
-        return None
-    required = (
-        "project_path",
-        "host",
-        "port",
-        "transport",
-        "adapter_shutdown",
-        "thread",
-        "stop_requested",
-        "stopped",
-        "reaper_started",
-        "cleanup_lock",
-    )
-    if not all(hasattr(state, name) for name in required):
-        raise RuntimeError("Infernux MCP runtime service has an invalid owner")
-    return state
+    mcp.add_middleware(SessionBinding())
 
+    def current_session():
+        task_session = get_task_session_id()
+        owner = sessions.get(task_session) if task_session is not None else session_scope.get()
+        if owner is None or owner.closed or owner.identity is None:
+            raise AutomationError("mcp.session_closed", "The originating MCP session is closed")
+        return owner
 
-def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bool:
-    """Start the embedded HTTP MCP server if it is not already running."""
-    from infernux_mcp.supervisor_utils import _require_loopback_host, _require_port
+    def connection():
+        owner = current_session()
+        if owner.client is None:
+            owner.client = AutomationClient(project, session_id=owner.identity)
+        return owner.client
 
-    host = _require_loopback_host(host)
-    port = _require_port(port)
-    with _lifecycle_lock:
-        existing = _active_state()
-        contract = getattr(existing, "transport_contract", 0) if existing is not None else _TRANSPORT_CONTRACT
-        if contract > _TRANSPORT_CONTRACT:
-            raise RuntimeError("Infernux MCP transport owner has an unsupported version contract")
-        if existing is not None and contract < _TRANSPORT_CONTRACT:
-            # Owners from an older plugin generation survive module reload.
-            # Retire that transport before publishing the current one.
-            _stop_state(existing)
-            existing = _active_state()
-        if existing is not None:
-            if existing.stop_requested.is_set():
-                if not existing.stopped.wait(timeout=10.0):
-                    raise RuntimeError(
-                        "Previous Infernux MCP transport did not retire within 10 seconds"
-                    )
-                existing = _active_state()
-                if existing is not None:
-                    raise RuntimeError(
-                        "Retired Infernux MCP transport still owns the runtime service"
-                    )
-        if existing is not None:
-            if existing.is_alive() and existing.matches(
-                project_path, host, int(port)
-            ):
-                return True
-            if existing.is_alive():
-                raise RuntimeError(
-                    "Infernux MCP is already serving a different project or endpoint"
-                )
-            # A terminated owner must be fully removed before another transport
-            # is published. Never start a second server over stale global state.
-            _stop_state(existing)
+    async def send(owner, client, method, **arguments):
+        if stopping is not None and stopping.is_set():
+            raise AutomationError("mcp.service_stopped", "MCP source changed; restart the service to load current code")
+        if owner.closed or owner.client is not client:
+            raise AutomationError("mcp.session_closed", "The originating MCP connection was closed or replaced")
+        value = await asyncio.to_thread(client.request, method, **arguments)
+        if method == "query_start":
+            owner.observing = True
+        return value
 
-        try:
-            FastMCP = _import_fastmcp()
-        except ImportError as exc:
-            Debug.log_warning(
-                "Infernux MCP disabled: install PyPI packages 'mcp' and 'fastmcp' to enable "
-                f"the embedded HTTP server ({exc})."
-            )
-            return False
+    async def request(method, **arguments):
+        return await send(current_session(), connection(), method, **arguments)
 
-        from infernux_mcp.settings import configure, feature_enabled, is_enabled
-        config = configure(project_path, write_default=True)
-        if not is_enabled():
-            Debug.log_internal(
-                "Infernux MCP server disabled by "
-                "ProjectSettings/mcp_settings.json"
-            )
-            return False
-        from infernux_mcp.session import configure as configure_session
-        session_state = configure_session(project_path, config)
-        Debug.log_internal(
-            "Infernux MCP session configured: "
-            f"build_profile={session_state.build_profile}, "
-            f"recording={session_state.recording_enabled}"
-        )
-        if feature_enabled("session_call_log"):
+    async def release(client, method, **arguments):
+        # Cleanup keeps its original engine binding, even after MCP disconnect or
+        # an explicit engine_connect. It never replays the operation that ran.
+        with anyio.CancelScope(shield=True):
             try:
-                from infernux_mcp.trace import start_session_log
-                info = start_session_log(project_path)
-                Debug.log_internal(
-                    f"Infernux MCP session log initialized: {info.get('path')}"
-                )
-            except Exception as exc:
-                Debug.log_suppressed("infernux_mcp.start_session_log", exc)
-        from mcp.server.transport_security import TransportSecuritySettings
-        # No authentication: MCP is driven by the local user. The SDK guard only
-        # stops remote web pages from reaching the loopback port via DNS
-        # rebinding; local browser tools (e.g. MCP Inspector) stay allowed.
-        mcp = FastMCP(
-            SERVER_NAME, stateless_http=True, json_response=True, log_level="WARNING",
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=True,
-                allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}"],
-                allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
-            ),
-        )
+                await asyncio.to_thread(client.request, method, **arguments)
+            except AutomationError:
+                pass  # An unreachable engine expires query leases; effects stay unknown.
 
-        # Keep health probing outside the streamable HTTP mount. A bare GET on
-        # /mcp is transport negotiation, not a stable readiness endpoint.
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
-        @mcp.custom_route(HEALTH_PATH, methods=["GET"])  # type: ignore[attr-defined]
-        async def _mcp_health_probe(request: Request) -> JSONResponse:
-            return JSONResponse(
-                {
-                    "name": SERVER_NAME,
-                    "ready": True,
-                }
-            )
-
-        from infernux_mcp.adapter import begin_shutdown_adapter, register_gateways, shutdown_adapter
-        register_gateways(mcp, project_path, config)
-
-        import uvicorn
-
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    async def acquire_resource(owner, client, method, arguments, cleanup):
+        # A cancelled to_thread wait does not cancel the HTTP operation. Retain
+        # its eventual handle so cancellation cannot abandon a created resource.
+        pending = asyncio.create_task(send(owner, client, method, **arguments))
+        value = None
         try:
-            listener.setsockopt(socket.SOL_SOCKET,
-                                socket.SO_EXCLUSIVEADDRUSE if os.name == "nt" else socket.SO_REUSEADDR, 1)
-            listener.bind((host, port))
-            listener.listen(2048)
-            listener.setblocking(False)
-        except OSError as exc:
-            listener.close()
-            shutdown_adapter()
-            raise RuntimeError("Infernux MCP transport failed before becoming ready") from exc
+            value = await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                try:
+                    value = await pending
+                except Exception:
+                    pass  # No handle was returned; do not repeat an unknown operation.
+            if value is not None:
+                await cleanup(client, value)
+            raise
+        if owner.closed or owner.client is not client:
+            await cleanup(client, value)
+            raise AutomationError("mcp.session_closed", "The originating MCP connection was closed or replaced")
+        return value
 
-        transport = uvicorn.Server(
-            uvicorn.Config(
-                mcp.streamable_http_app(),
-                host=str(host),
-                port=int(port),
-                log_config=None,
-                log_level="warning",
-                # Proactor reports normal client TCP resets as callback errors
-                # on Windows. Scope Selector to this HTTP server's loop; the
-                # Editor's process-wide event loop policy stays untouched.
-                loop="asyncio:SelectorEventLoop" if os.name == "nt" else "auto",
-            )
-        )
-        state = _ServerState(
-            project_path=resolved_path(project_path),
-            host=str(host),
-            port=int(port),
-            mcp=mcp,
-            transport=transport,
-            adapter_shutdown=shutdown_adapter,
-            adapter_begin_shutdown=begin_shutdown_adapter,
-        )
+    @asynccontextmanager
+    async def owned_resource(owner, client, method, arguments, cleanup):
+        value = await acquire_resource(owner, client, method, arguments, cleanup)
+        try:
+            yield value
+        finally:
+            await cleanup(client, value)
 
-        def _run() -> None:
-            try:
-                # Capture this generation's transport. Reading a module global
-                # here lets hot reload redirect an old thread to a new server.
-                transport.run(sockets=[listener])
-            except BaseException as exc:
-                state.error = exc
-                if not state.stop_requested.is_set():
-                    Debug.log_error(f"Infernux MCP HTTP server stopped: {exc}")
+    def watched_query(owner, client, **arguments):
+        return owned_resource(owner, client, "query_start", arguments,
+                              lambda bound, watch: release(bound, "query_stop", query_id=watch["id"]))
 
-        context = copy_context()
-        state.thread = threading.Thread(
-            target=lambda: context.run(_run), name="InfernuxMCPHTTP", daemon=True)
-        install_runtime_service(_RUNTIME_SERVICE_NAME, state)
-        state.thread.start()
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if bool(getattr(transport, "started", False)):
-                if feature_enabled("discovery_files"):
-                    _write_discovery_files(project_path, host=host, port=int(port))
-                Debug.log_internal(
-                    f"Infernux MCP HTTP server ready at "
-                    f"{endpoint_url(host=host, port=int(port))}"
-                )
-                return True
-            if state.error is not None or not state.is_alive():
-                error = state.error
-                _stop_state(state)
-                raise RuntimeError(
-                    "Infernux MCP transport failed before becoming ready"
-                ) from error
-            time.sleep(0.01)
-        _stop_state(state)
-        raise RuntimeError("Infernux MCP transport readiness timed out after 5 seconds")
+    # The MCP SDK invokes its low-level lifespan once for each protocol session,
+    # including stdio EOF, HTTP DELETE/expiry and in-process client disconnect.
+    # Compose that lifecycle; no client-brand or hand-built protocol is involved.
+    protocol_lifespan = mcp._mcp_server.lifespan
 
-
-def stop_server() -> None:
-    """Stop the process-owned transport and wait until its port is released."""
-    with _lifecycle_lock:
-        state = _active_state()
-        if state is not None:
-            _stop_state(state)
-
-
-def request_stop_server() -> None:
-    """Request transport retirement without waiting on an in-flight request."""
-    with _lifecycle_lock:
-        state = _active_state()
-        if state is not None:
-            _request_stop_state(state)
-
-
-def _stop_state(state: _ServerState) -> None:
-    _request_stop_state(state)
-    if not state.stopped.wait(timeout=10.0):
-        raise RuntimeError("Infernux MCP transport did not stop within 10 seconds")
-
-
-def _request_stop_state(state: _ServerState) -> None:
-    state.stop_requested.set()
-    if state.adapter_begin_shutdown is not None:
-        state.adapter_begin_shutdown()
-    state.transport.should_exit = True
-    with state.cleanup_lock:
-        if state.reaper_started.is_set():
+    async def close_session(owner):
+        if owner.closed:
             return
-        state.reaper_started.set()
-    threading.Thread(
-        target=_reap_state,
-        args=(state,),
-        name="InfernuxMCPRetire",
-        daemon=True,
-    ).start()
+        owner.closed = True
+        for identity in owner.protocol_ids:
+            if sessions.get(identity) is owner:
+                del sessions[identity]
+        with anyio.CancelScope(shield=True):
+            owner.pulse.cancel()
+            await asyncio.gather(owner.pulse, return_exceptions=True)
+            owner.observing = False
+            if owner.client is not None:
+                try:
+                    await asyncio.to_thread(owner.client.close)
+                except AutomationError:
+                    pass  # Engine leases cover an unreachable/killed service.
 
+    # FastMCP 3.4.8 waits for task-status subscriptions before exiting its
+    # protocol lifespan. Release observations when the SDK input stream closes,
+    # so a task waiting on those observations cannot hold its own session open.
+    # The stream still passes every protocol message to the unmodified SDK.
+    protocol_run = mcp._mcp_server.run
 
-def _reap_state(state: _ServerState) -> None:
-    thread = state.thread
-    if thread is not None and thread is not threading.current_thread():
-        thread.join()
-    try:
-        state.adapter_shutdown()
-        if state.project_path:
-            _remove_discovery_files(
-                state.project_path, host=state.host, port=state.port
-            )
-        remove_runtime_service(_RUNTIME_SERVICE_NAME, state)
-    except BaseException as exc:
-        state.error = exc
-        Debug.log_error(f"Infernux MCP transport retirement failed: {exc}")
-    else:
-        state.stopped.set()
+    class SessionInput(anyio.abc.ObjectReceiveStream):
+        def __init__(self, stream):
+            self.stream = stream
 
+        async def receive(self):
+            try:
+                return await self.stream.receive()
+            except (anyio.EndOfStream, anyio.ClosedResourceError):
+                owner = session_scope.get()
+                if owner is not None:
+                    await close_session(owner)
+                raise
 
-def is_running() -> bool:
-    state = _active_state()
-    return state is not None and state.is_alive()
+        async def aclose(self):
+            await self.stream.aclose()
 
+    async def session_run(read_stream, write_stream, *args, **kwargs):
+        return await protocol_run(SessionInput(read_stream), write_stream, *args, **kwargs)
 
-def endpoint_url(*, host: str | None = None, port: int | None = None) -> str:
-    state = _active_state()
-    resolved_host = (
-        (state.host if state is not None else HOST) if host is None else host
-    )
-    resolved_port = (
-        (state.port if state is not None else PORT) if port is None else int(port)
-    )
-    return f"http://{resolved_host}:{resolved_port}{PATH}"
+    mcp._mcp_server.run = session_run
 
-
-def health_url(*, host: str | None = None, port: int | None = None) -> str:
-    state = _active_state()
-    resolved_host = (
-        (state.host if state is not None else HOST) if host is None else host
-    )
-    resolved_port = (
-        (state.port if state is not None else PORT) if port is None else int(port)
-    )
-    return f"http://{resolved_host}:{resolved_port}{HEALTH_PATH}"
-
-
-def connection_info(*, host: str | None = None, port: int | None = None) -> dict:
-    state = _active_state()
-    resolved_host = (
-        (state.host if state is not None else HOST) if host is None else host
-    )
-    resolved_port = (
-        (state.port if state is not None else PORT) if port is None else int(port)
-    )
-    url = endpoint_url(host=resolved_host, port=resolved_port)
-    return {
-        "name": SERVER_NAME,
-        "transport": "streamable-http",
-        "host": resolved_host,
-        "port": resolved_port,
-        "path": PATH,
-        "url": url,
-        "health_url": health_url(host=resolved_host, port=resolved_port),
-        "clients": _client_connection_configs(url),
-    }
-
-
-def _client_connection_configs(url: str) -> dict:
-    """Direct streamable-HTTP entries in each client's own config dialect."""
-    streamable = {"url": url, "transport": "streamable-http"}
-    typed_http = {"type": "http", "url": url}
-    clients = {}
-    for name, file, root_key, entry in (
-        ("generic", "mcp.json", "mcpServers", streamable),
-        ("cursor", ".cursor/mcp.json", "mcpServers", streamable),
-        ("claude_code", ".mcp.json", "mcpServers", typed_http),
-        ("vscode_copilot", ".vscode/mcp.json", "servers", typed_http),
-        ("trae", ".trae/mcp.json", "mcpServers", typed_http),
-        ("gemini", ".gemini/settings.json", "mcpServers",
-         {"httpUrl": url, "timeout": 600000, "trust": False}),
-    ):
-        clients[name] = {"file": file, "format": root_key,
-                         "config": {root_key: {"infernux-editor": dict(entry)}}}
-    return clients
-
-
-def _write_discovery_files(project_path: str, *, host: str, port: int) -> None:
-    """Write small project-local MCP discovery files for external agents.
-
-    These files are intentionally data-only and safe to regenerate. They make
-    the embedded editor MCP endpoint discoverable without hard-coding the port
-    in an agent prompt.
-    """
-    root = resolved_path(project_path or "")
-    if not root:
-        return
-    info = connection_info(host=host, port=port)
-    _update_discovery_file(os.path.join(root, "mcp.json"), _write_generic_manifest_file, info)
-    for client_name, client in info["clients"].items():
-        if client_name != "generic":
-            target = os.path.join(root, client["file"])
-            _update_discovery_file(target, _merge_client_json_config, client["config"])
-
-
-def _remove_discovery_files(
-    project_path: str, *, host: str = HOST, port: int = PORT
-) -> None:
-    """Remove only discovery entries owned by this plugin.
-
-    Client configuration files may contain unrelated user servers, so unload
-    must be the inverse of the merge performed by ``_write_discovery_files``
-    rather than deleting those files wholesale.
-    """
-
-    root = resolved_path(project_path or "")
-    if not root:
-        return
-    _update_discovery_file(os.path.join(root, "mcp.json"), _remove_generic_manifest)
-    info = connection_info(host=host, port=port)
-    for client_name, client in info["clients"].items():
-        if client_name != "generic":
-            target = os.path.join(root, client["file"])
-            root_key = next(iter(client["config"]))
-            _update_discovery_file(target, _remove_json_server, root_key, "infernux-editor")
-
-
-def _update_discovery_file(path: str, update, *args) -> None:
-    try:
-        update(path, *args)
-    except (OSError, ValueError) as exc:
-        Debug.log_suppressed(f"infernux_mcp.discovery_file: {path}", exc)
-
-
-def _remove_generic_manifest(path: str) -> None:
-    data = _read_json_object(path)
-    if not data:
-        return
-    data.pop("infernux", None)
-    data.pop("clients", None)
-    servers = data.get("mcpServers")
-    if isinstance(servers, dict):
-        servers.pop("infernux-editor", None)
-        if not servers:
-            data.pop("mcpServers", None)
-    _write_or_remove_json(path, data)
-
-
-def _remove_json_server(path: str, root_key: str, server_name: str) -> None:
-    data = _read_json_object(path)
-    servers = data.get(root_key)
-    if not isinstance(servers, dict) or server_name not in servers:
-        return
-    servers.pop(server_name, None)
-    if not servers:
-        data.pop(root_key, None)
-    _write_or_remove_json(path, data)
-
-
-def _write_or_remove_json(path: str, value: dict) -> None:
-    if value:
-        _write_json_if_changed(path, value)
-        return
-    _remove_generated_file(path)
-
-
-def _remove_generated_file(path: str) -> None:
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    parent = os.path.dirname(path)
-    if os.path.basename(parent) in {".cursor", ".vscode", ".trae", ".gemini"}:
+    @asynccontextmanager
+    async def session_lifespan(server):
+        owner = _EngineSession()
+        token = session_scope.set(owner)
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(25.0)
+                if owner.observing and owner.client is not None:
+                    try:
+                        await asyncio.to_thread(owner.client.keepalive)
+                    except AutomationError:
+                        # A disconnected engine is never silently rebound.
+                        owner.observing = False
+        owner.pulse = asyncio.create_task(heartbeat())
+        async def stop_source_session():
+            await stopping.wait()
+            await close_session(owner)
+        source_stop = asyncio.create_task(stop_source_session()) if stopping is not None else None
         try:
-            os.rmdir(parent)
-        except OSError:
-            pass
+            async with protocol_lifespan(server) as context:
+                yield context
+        finally:
+            if source_stop is not None:
+                if not stopping.is_set():
+                    source_stop.cancel()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(source_stop, return_exceptions=True)
+            await close_session(owner)
+            session_scope.reset(token)
 
+    mcp._mcp_server.lifespan = session_lifespan
 
-def _write_generic_manifest_file(path: str, info: dict) -> None:
-    generic = info["clients"]["generic"]["config"]
-    data = _read_json_object(path)
-    data["infernux"] = {
-        "name": info["name"],
-        "transport": info["transport"],
-        "host": info["host"],
-        "port": info["port"],
-        "path": info["path"],
-        "url": info["url"],
-    }
-    data["clients"] = {
-        name: {"file": client["file"], "format": client["format"]}
-        for name, client in info["clients"].items()
-    }
-    for root_key, root_value in generic.items():
-        if isinstance(root_value, dict):
-            bucket = data.setdefault(root_key, {})
-            if isinstance(bucket, dict):
-                bucket.update(root_value)
-            else:
-                data[root_key] = root_value
-        else:
-            data[root_key] = root_value
-    _write_json_if_changed(path, data)
+    async def response(value, ctx, consumer=""):
+        consumer = consumer or ctx.session_id
+        try:
+            reports = await request("reports", consumer=consumer)
+        except AutomationError as exc:
+            return {"result": value, "reports_error": {"code": exc.code, "message": str(exc)}}
+        return {"result": value, "reports": reports} if reports else value
 
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def engine_status() -> dict:
+        """Read the selected project and engine instance. No native engine import occurs in this service."""
+        return await request("info")
 
-def _merge_client_json_config(path: str, config: dict) -> None:
-    data = _read_json_object(path)
-    for root_key, root_value in config.items():
-        if isinstance(root_value, dict):
-            bucket = data.setdefault(root_key, {})
-            if isinstance(bucket, dict):
-                bucket.update(root_value)
-            else:
-                data[root_key] = root_value
-        else:
-            data[root_key] = root_value
-    _write_json_if_changed(path, data)
+    @mcp.tool
+    async def engine_connect() -> dict:
+        """Explicitly bind to the currently running engine of this project after an engine restart."""
+        owner = current_session()
+        previous = owner.client
+        owner.client = None
+        if previous is not None:
+            try:
+                await asyncio.to_thread(previous.close)
+            except AutomationError:
+                pass
+        owner.client = AutomationClient(project, session_id=owner.identity)
+        owner.observing = False
+        return await request("info")
 
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def operation_search(query: str = "", limit: int = 30) -> dict:
+        """Find current operations by intent or domain; retrieve the full schema only for selected operations."""
+        value = await request("operations", query=query, limit=limit)
+        value["operations"] = [{key: item[key] for key in ("id", "kind", "summary", "tags")}
+                               for item in value["operations"]]
+        return value
 
-def _read_json_object(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            value = json.load(f)
-    except FileNotFoundError:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError(f"MCP client configuration must be a JSON object: {path}")
-    return value
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def operation_schema(operation: str) -> dict:
+        """Read the complete input/output schema of one current operation."""
+        return await request("schema", operation=operation)
 
+    @mcp.tool
+    async def operation_call(operation: str, arguments: dict, ctx: Context, consumer: str = ""):
+        """Invoke one current query/command/workflow. Unknown write outcomes are never retried."""
+        value = await request("call", operation=operation, arguments=arguments)
+        return await response(value, ctx, consumer)
 
-def _write_json_if_changed(path: str, value: dict) -> None:
-    text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
-    _write_text_if_changed(path, text)
+    @mcp.tool
+    async def operation_batch(calls: list[dict], ctx: Context, consumer: str = ""):
+        """Execute ordered explicit operations, stopping at the first failure; no world rollback is implied."""
+        return await response(await request("batch", calls=calls), ctx, consumer)
 
+    @mcp.tool
+    async def operation_submit(operation: str, arguments: dict) -> dict:
+        """Submit a long engine operation and retain its engine-owned job handle."""
+        return await request("job_submit", operation=operation, arguments=arguments)
 
-def _write_text_if_changed(path: str, text: str) -> None:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            if f.read() == text:
-                return
-    except FileNotFoundError:
-        pass
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def operation_job(job_id: str) -> dict:
+        """Read the actual engine job status/result."""
+        return await request("job_status", job_id=job_id)
 
+    @mcp.tool
+    async def operation_cancel(job_id: str) -> dict:
+        """Cancel queued engine work. A running operation may already have applied changes."""
+        return {"cancelled": await request("job_cancel", job_id=job_id)}
 
-def _import_fastmcp():
-    # The embedded server is owned by the official MCP SDK.  The separate
-    # ``fastmcp`` distribution is used by our loopback client, but its server
-    # class has a different ASGI application contract.  Mixing the two behind
-    # an import fallback makes startup depend on import order.
-    from mcp.server.fastmcp import FastMCP
+    @mcp.tool
+    async def observe(operation: str, arguments: dict, ctx: Context, signals: list[str] | None = None,
+                      reports: int = 3, mode: str = "adaptive", consumer: str = "") -> dict:
+        """Observe a query on domain signals, optionally reporting through later conversation turns.
 
-    return FastMCP
+        modes: changes/adaptive count changed results; turns counts distinct real cycle IDs.
+        Use a stable conversation ID as consumer when a native prompt hook is connected.
+        """
+        owner, client = current_session(), connection()
+        async def close_query(bound, watch):
+            await release(bound, "query_stop", query_id=watch["id"])
+        watch = await acquire_resource(owner, client, "query_start",
+                                       {"operation": operation, "arguments": arguments, "signals": signals}, close_query)
+        try:
+            delivery = await send(owner, client, "report_start", query_id=watch["id"],
+                                  consumer=consumer or ctx.session_id, reports=reports, mode=mode)
+        except BaseException:
+            await close_query(client, watch)
+            raise
+        return {"observation": watch, "delivery": delivery}
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def observation(query_id: str, after: int | None = None, timeout: float = 25.0) -> dict:
+        """Read a query snapshot or wait for its next actual signal/result change; no frame polling."""
+        if after is None:
+            return await request("query_snapshot", query_id=query_id)
+        return await request("query_wait", query_id=query_id, after=after, timeout=timeout)
+
+    @mcp.tool
+    async def stop_observing(query_id: str, report_id: str = "") -> dict:
+        """Release a query subscription and its optional report delivery."""
+        if report_id:
+            await request("report_stop", report_id=report_id)
+        return {"stopped": await request("query_stop", query_id=query_id)}
+
+    @mcp.tool
+    async def conversation_turn(consumer: str, cycle_id: str) -> dict:
+        """Deliver scheduled reports for a real user turn. Repeating the same ID never consumes twice."""
+        return {"reports": await request("reports", consumer=consumer, cycle_id=cycle_id)}
+
+    @mcp.resource("infernux://catalog")
+    async def catalog_resource():
+        return json.dumps(await request("operations", query="", limit=10000), ensure_ascii=False)
+
+    @mcp.resource("infernux://operation/{operation}")
+    async def schema_resource(operation: str):
+        return json.dumps(await request("schema", operation=operation), ensure_ascii=False)
+
+    @mcp.resource("infernux://query/{query_id}")
+    async def query_resource(query_id: str):
+        return json.dumps(await request("query_snapshot", query_id=query_id), ensure_ascii=False)
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    def help() -> dict:
+        """Read connection/workflow guidance even while no engine is running."""
+        return {"project": str(Path(project).resolve()), "architecture": "MCP -> Automation SDK -> public engine Host",
+                "queries": "Signals: world.changed, scene.changed, runtime.changed, player.changed, assets.changed, scripts.changed, console.changed, capture.completed, operations.changed; defaults follow the operation domain; custom signals are supported.",
+                "reports": "changes/adaptive report new results; turns requires a distinct real cycle_id. MCP notifications never start a new model turn.",
+                "clients": "Claude Code, Codex, DSH and WorkBuddy connect through standard stdio or Streamable HTTP. No private chat databases are read."}
+
+    @mcp.tool(task=True)
+    async def load_and_capture(asset_guid: str, source: str = "game", timeout: float = 30.0) -> dict:
+        """Open a scene, await its real ready state, then capture it. Supports standard MCP background tasks."""
+        from time import monotonic
+        owner, client = current_session(), connection()
+        async def invoke(method, **arguments):
+            return await send(owner, client, method, **arguments)
+        deadline = monotonic() + timeout
+        async def changed(watch, revision):
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Scene/capture workflow did not finish within its time budget")
+            snapshot = await invoke("query_wait", query_id=watch["id"], after=revision, timeout=min(25.0, remaining))
+            if snapshot["status"] == "closed":
+                raise RuntimeError("The engine observation was closed")
+            if snapshot["error"]:
+                raise RuntimeError(snapshot["error"])
+            return snapshot
+        opened = await invoke("call", operation="infernux.scene.open", arguments={"asset_guid": asset_guid})
+        async with watched_query(owner, client, operation="infernux.project.info", arguments={}, signals=["scene.changed"]) as watch:
+            revision = 0
+            while True:
+                snapshot = await changed(watch, revision)
+                info = snapshot["value"] or {}
+                outcome = (info.get("active_scene") or {}).get("last_load") or {}
+                if outcome.get("status") == "failed":
+                    raise RuntimeError(str(outcome))
+                if outcome.get("status") == "loaded" and Path(outcome["path"]) == Path(opened["path"]):
+                    break
+                revision = snapshot["revision"]
+        completed = False
+        async def close_capture(bound, capture):
+            if not completed:
+                await release(bound, "call", operation="infernux.capture.cancel", arguments={"capture_id": capture["capture_id"]})
+        async with owned_resource(owner, client, "call",
+                                  {"operation": "infernux.capture.request", "arguments": {"source": source}}, close_capture) as capture:
+            async with watched_query(owner, client, operation="infernux.capture.status",
+                                     arguments={"capture_id": capture["capture_id"]}, signals=["capture.completed"]) as watch:
+                revision = 0
+                while True:
+                    snapshot = await changed(watch, revision)
+                    value = snapshot["value"] or {}
+                    if value.get("terminal"):
+                        if value["status"] != "completed":
+                            raise RuntimeError(str(value))
+                        completed = True
+                        return value
+                    revision = snapshot["revision"]
+
+    return mcp

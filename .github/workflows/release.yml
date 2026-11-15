@@ -1,64 +1,46 @@
-name: Validate and release
-
+name: Package and release
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
-
 permissions:
-  contents: read
-
+  contents: write
 jobs:
-  validate:
+  package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Install client transport dependencies
-        run: python -m pip install -r package/requirements.txt
-      - name: Test standalone client and real HTTP workflows
-        run: python -m unittest discover -s test -p 'test_client*.py' -v
-      - name: Test Python launcher virtual environments
-        run: python -m unittest discover -s test -p 'test_supervisor_paths.py' -v
-      - name: Test toolbox settings
-        run: python -m unittest discover -s test -p 'test_toolbox.py' -v
-      - name: Validate Python sources and reproducible package output
-        run: |
-          python -m compileall -q package/editor
-          mkdir -p dist/repro
-          python package.py build dist/infernux.mcp.inxpkg
-          python package.py verify dist/infernux.mcp.inxpkg
-          python package.py build dist/repro/infernux.mcp.inxpkg
-          cmp dist/infernux.mcp.inxpkg dist/repro/infernux.mcp.inxpkg
-
-  release:
-    needs: validate
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Get the lightweight engine SDK source
+        uses: actions/checkout@v4
         with:
-          python-version: '3.13'
-      - name: Build release assets
-        run: |
-          python package.py build dist/infernux.mcp.inxpkg
-          python package.py verify dist/infernux.mcp.inxpkg
-          python package.py release-manifest dist/infernux.mcp.inxpkg \
-            --tag "${GITHUB_REF_NAME}" --output dist/infernux-plugin-release.json
-      - name: Publish GitHub Release assets
+          repository: ChenlizheMe/Infernux
+          # Pin the standalone client contract, including before the paired engine PR merges.
+          ref: 0945959a4b527a1cd8db496d86cc70fa13ec0661
+          path: engine-sdk
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /python/pyproject.toml
+            /python/infernux_automation/
+      - name: Install service dependencies without native engine binaries
+        run: python -m pip install ./engine-sdk/python -r package/requirements.txt
+      - name: Exercise the standard MCP protocol and client configurations
+        env:
+          INFERNUX_NATIVE_MODULE_DIR: /unavailable-native
+        run: python -m unittest discover -s test -p 'test_*.py' -v
+      - name: Build plugin
+        run: python package.py build dist/infernux.mcp.inxpkg
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: python package.py release-manifest dist/infernux.mcp.inxpkg --tag "$GITHUB_REF_NAME" --output dist/infernux-plugin-release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-package
+          path: dist/
+      - if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" dist/infernux.mcp.inxpkg dist/infernux-plugin-release.json --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" dist/infernux.mcp.inxpkg dist/infernux-plugin-release.json \
-              --verify-tag --generate-notes
-          fi
+        run: gh release create "$GITHUB_REF_NAME" dist/infernux.mcp.inxpkg dist/infernux-plugin-release.json --generate-notes

@@ -1,109 +1,138 @@
-# Usage
+# Infernux MCP
 
-This package only exposes a handful of MCP tools. The actual work lives in operations.
+[简体中文](README.zh-CN.md)
 
-![Calling an operation](media/agent_loop.png)
+Requires an engine build containing the public Automation Host. The final minimum release is set when the engine changes are published.
 
-1. Search for the operation you need.
-2. Read its schema. Do not guess argument names.
-3. Call it as a query, a command, or a background job.
-4. Keep using the IDs it returned. Assets are GUIDs. Scene objects come from queries.
+A standard MCP service for Infernux. The editor owns scene editing, assets,
+input, capture, builds and Player control. This plugin owns protocol transport,
+operation discovery, resource projection, conversation delivery and reusable
+workflows. Disabling MCP does not remove the engine's automation capabilities.
 
-Before writing an unfamiliar component field, call `infernux.scene.component.schema`.
+## Run and connect
 
-`infernux.scene.open` and `infernux.scene.reload` return `scheduled: true` when a load is queued. Read `infernux.project.info` afterwards: `active_scene.last_load` contains the requested `path`, `status` (`pending`, `loading`, `loaded`, or `failed`), and the specific `error`. Wait for `loaded` for that path before editing the replacement scene. Also check `active_scene.document_state`: `conflict` means the disk changed again while loading, so the loaded scene is not the latest disk version and the external conflict must be reviewed. A completed MCP job for these operations only confirms that scheduling finished. The previous scene remains active if validation fails.
+Install `infernux/mcp` through the normal editor plugin manager. Enabling it
+starts a separate loopback Streamable HTTP process. Its dynamically allocated
+endpoint is in `<project>/Cache/Automation/mcp.json`; the engine's independent
+endpoint is in `engine.json` beside it. There is no shared default port and no
+permission mode or allow list.
 
-`active_scene.document_state` identifies an external-file conflict. Resolve it with the editor's reload, keep-local, or save-copy choice before saving. Reload uses the same strict scene format checks as startup, and its dialog displays the parsing error. Correct the reported field in the file before loading it again; component `data` must not contain runtime metadata such as `__type_name__` or `__component_id__`. External editors may use atomic file replacement to save scripts and assets.
+Standard stdio is also supported:
 
-Player builds and other slow work should go through `operation_job_submit`. Poll `operation_job_status` instead of waiting on the first call.
-
-## Python client
-
-The Editor regenerates its `infernux-editor` entries as direct streamable-HTTP
-configurations pointing at `http://127.0.0.1:9713/mcp`. Valid JSON
-configurations retain unrelated servers and settings. JSONC, malformed JSON and
-non-object documents are left untouched and reported in the Console; other
-client files still update. Merge the corresponding `connection_info()["clients"]`
-configuration into such a file yourself.
-
-The server binds only to loopback and needs no credential. `/health` reports
-readiness only and is not an MCP client endpoint.
-
-Use the same Python environment as the Editor. From this plugin checkout, add
-`package/editor` to `PYTHONPATH` (preserving existing entries). For example in
-Bash: `export PYTHONPATH="$PWD/package/editor${PYTHONPATH:+:$PYTHONPATH}"`.
-An installed project uses `Packages/infernux/mcp/editor` instead.
-
-```bash
-python -m infernux_mcp.client --timings call host_session_status
-python -m infernux_mcp.client call operation_schema_search --args-file search.json
-python -m infernux_mcp.client --timeout 30 --timings session
+```powershell
+python -m infernux_mcp --project E:/Games/MyGame
 ```
 
-Global options precede `call`, `session`, `list-tools` or `describe`. Use
-`--endpoint http://127.0.0.1:PORT/mcp` when running multiple Editors.
-`search.json` is a UTF-8 object such as `{"query":"scene object create","limit":10}`.
-`--args-file -` reads that object from stdin. It is mutually exclusive with
-`--args`; malformed input is rejected before connecting.
+The standalone environment needs `package/requirements.txt`, the plugin's
+`package/editor` on `PYTHONPATH`, and the lightweight Automation SDK. The SDK
+is included in the engine environment; outside it, install the engine source's
+`python/` subproject. Importing the service or SDK does not load the native
+engine or require a graphics device.
 
-In `session` mode, write one request per line:
+Generate a native client declaration, or merge it into a file you specify:
 
-```json
-{"id":"status","tool":"host_session_status","arguments":{}}
-{"id":"schema","tool":"operation_schema_get","arguments":{"operation":"infernux.scene.object.create"}}
+```powershell
+python -m infernux_mcp.connect --client claude --project E:/Games/MyGame --output E:/Games/MyGame/.mcp.json
+python -m infernux_mcp.connect --client codex --project E:/Games/MyGame --output <your-config.toml>
+python -m infernux_mcp.connect --client dsh --project E:/Games/MyGame --output <your-plugins.yaml>
+python -m infernux_mcp.connect --client workbuddy --project E:/Games/MyGame --output E:/Connectors/Infernux/mcp.json
 ```
 
-Each completed request immediately produces one line:
-`{"id":"status","result":{"ok":true,"data":{...}}}`.
-`id` is optional and may be a string, integer or null. Only `id`, `tool` and
-`arguments` are accepted. Read each result before sending a dependent command;
-keep returned object IDs and GUIDs rather than rediscovering them. EOF closes the
-connection. Blank lines are ignored. Invalid records and failed calls produce
-error results, and later supplied records are still processed. Exit status is
-1 if any record failed, otherwise 0 (130 after Ctrl+C). A one-shot `call` also
-returns 1 for an operation error, failed batch step, or failed/cancelled job,
-while preserving the server envelope on stdout. Arbitrary fields inside an
-operation's result are not treated as gateway errors.
+Omitting `--output` prints the declaration. Claude, Codex and DSH merge only the
+named `infernux` server; unrelated servers and client settings keep their values.
+WorkBuddy output is the `mcp.json` of a separate Infernux Connector: its
+[official Connector format](https://open.workbuddy.cn/en/docs/connector) uses only
+the first server in that file. The generator refuses a WorkBuddy file containing
+another server without changing it; a file containing only Infernux can be updated.
+Merging
+TOML or YAML normalizes formatting and does not preserve comments; DSH's tagged
+values such as `!!js` retain their tags and contents without being executed. Client formats
+follow the public [Claude MCP](https://code.claude.com/docs/en/mcp),
+[Codex MCP](https://developers.openai.com/codex/mcp),
+[DSH MCP client](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)
+and [WorkBuddy connector](https://open.workbuddy.cn/en/docs/connector) interfaces.
+The generator does not guess private client paths or read conversation databases.
 
-All local operations are available in one session, without permission grants or MCP mode switches. Calls still validate their schema and use the engine's ordinary undo and execution lifecycle. The CLI never replays a failed call or opens a replacement client to retry it. A timeout or disconnect does not prove a command was
-cancelled or rolled back; inspect the scene/job before deciding whether to retry.
-Completed request results are written before disconnecting. A disconnect error
-is reported separately on stderr and causes a nonzero exit status, preserving
-the request result on stdout.
-Long work still belongs in `operation_job_submit` followed by status queries.
-`--timeout` bounds MCP initialization and each request, not the entire session
-or idle time waiting for your next input. Network transport cleanup may add time.
+## Use
 
-## Latency diagnostics
+1. Read `help` and `engine_status`.
+2. Use `operation_search` to discover current operations, then `operation_schema`
+   for the chosen operation. Install or retire an engine plugin and the catalog
+   changes with its actual providers.
+3. Invoke `operation_call`, or `operation_batch` for ordered calls. A batch stops
+   at the first error; earlier world mutations are not undone.
+4. Submit long work with `operation_submit`, retain its engine job ID and inspect
+   it with `operation_job`. `operation_cancel` reports whether cancellation
+   actually succeeded. A running command can already have changed the world.
+5. `load_and_capture` opens a scene, waits for its loading signal, requests a
+   native render-target capture and waits for the actual GPU completion signal.
+   It supports standard MCP background tasks and a bounded timeout.
 
-`--timings` prints JSON timing records to stderr without argument or result
-payloads. `client_create` includes lazy transport imports; `connect_initialize`
-combines connection and MCP initialization; `request` includes transport,
-Editor main-thread queueing and operation execution; `serialize` measures local
-JSON encoding; `disconnect` and `total` describe cleanup and the CLI lifetime.
-`total` excludes Python interpreter/module startup, so measure process wall time
-when comparing fresh CLI processes. Client timings cannot isolate Editor queue
-wait from execution. Inspect the returned error code, console and engine logs
-before attributing a slow request to the network. The CLI labels input,
-connection/initialization and request failures separately.
+Resources: `infernux://catalog`, `infernux://operation/{operation}` and
+`infernux://query/{query_id}`. Captures are engine output files under the project's
+`Cache/Automation/artifacts/`, not desktop screenshots. Existing Host operations
+also expose keyboard/pointer input and managed Debug Player processes.
 
-From the plugin checkout, with an Editor already ticking:
+Plugin install, compatible release discovery, overwrite updates, enable/disable,
+uninstall and reload are public `infernux.plugin.*` operations. Editor themes use
+`infernux.theme.list`, `.select` and `.refresh`. They delegate to the same engine
+services as the editor UI and the SDK CLI. Updating without a tag selects the
+highest compatible published release; an explicit tag or local source is also
+supported. The returned activation/error/restart state describes the actual result.
 
-```bash
-python scripts/benchmark_client.py --endpoint http://127.0.0.1:9713/mcp --samples 3
-python -m unittest discover -s test -p 'test_client*.py' -v
+## Signal queries and later conversation turns
+
+`observe` subscribes a read operation to named signals, for example
+`scene.changed`, `assets.changed`, `runtime.changed`, `console.changed`,
+`capture.completed` or a signal from a game/plugin. Query evaluation is triggered
+by these signals, not every editor frame. `observation` reads or long-waits for a
+new result. `stop_observing` releases it.
+Finishing a report quota releases its managed query. Queries also retire when
+their current provider disappears/replaces itself. Each MCP protocol session
+owns its observations: closing that session releases them without touching
+another client or cancelling an already running engine job. Heartbeats renew
+idle observation leases; a killed sidecar's leases expire instead of remaining
+permanent engine observers.
+
+`reports` limits deliveries. `changes` and `adaptive` deliver changed results;
+`turns` delivers at distinct real user-turn IDs. Use a stable conversation ID as
+`consumer`. Tools never invent a new user turn, and an MCP notification does not
+force a model to run. Hosts that own the conversation can call `conversation_turn`
+or the SDK's `reports` endpoint once per user turn, and insert its result into
+that turn's context. Repeating the same cycle ID does not consume twice.
+
+Claude Code can use its public UserPromptSubmit hook:
+
+```powershell
+python -m infernux_mcp.connect --client claude --project E:/Games/MyGame --hook-output E:/Games/MyGame/.claude/settings.json
 ```
 
-The benchmark only reads session status, the compact schema catalog, runtime
-status, and a 20-query batch. It compares fresh-process wall time against the
-same calls on one persistent connection and prints raw phases plus medians.
-It changes no project settings and never retries failed calls.
-Transport tests require `package/requirements.txt`; client-only unit tests can
-run without the engine or dependencies (`-p test_client.py`). These measurements
-are not render performance or proof of a successful scene load/capture. A
-headless host can author and inspect scenes but cannot produce render-target
-screenshots; use a graphical Editor for capture verification.
+The hook adds `infernux_consumer` and available reports to the next prompt's
+context. Pass that consumer to `observe`. Turn counting requires a stable
+`prompt_id`, `request_id` or `event_id` supplied by the host. The base hook payload
+does not promise one: without it the hook delivers change reports only and
+explicitly states that automatic turns mode is unavailable. It never invents a
+UUID/user turn from a hook invocation. A conversation-owning host can instead
+pass its real ID through `conversation_turn` or the SDK. Other clients can use all standard
+tools/resources and the explicit turn entry point; automatic no-tool-turn
+injection depends on the host providing a real prompt hook. No private client
+state is patched.
 
-## Project settings
+## Failures and lifecycle
 
-`ProjectSettings/mcp_settings.json` configures tracing, discovery, session/build metadata and timeouts. There are no permission lists or MCP operating modes. The 0.2.0 release removes the old capability config and mode-switch APIs without migration. Scene edits, scripts, input, semantic UI, captures and Player tools work in one session. Capture results include `output_path` for viewing the PNG directly. Editor shutdown takes the public `editor_instance_id` returned by `host_session_status` to identify the intended process.
+One request means one operation. A timed-out or disconnected write is never
+replayed automatically. Engine instance IDs distinguish restarts; `engine_connect`
+explicitly binds the requesting session to the current instance. Other clients
+retain their own binding. Source failure retires the current
+plugin's registrations and child service; repairing the source constructs a new
+service. The editor remains the owner of jobs, queries, scene state and captures.
+
+Standalone stdio and HTTP processes watch their actual MCP and Automation SDK
+Python source directories through filesystem events. Saving, adding or deleting
+current source stops that process, releases its observations and reports the
+restart requirement on stderr. It does not hot-execute replacement code, replay
+a request or cancel an already submitted engine job. Restart the client connection
+after repairing or intentionally reverting the source.
+
+Build the package with `python package.py build dist/infernux.mcp.inxpkg`.
+The package includes only `package/`; test sources and CI files are not installed.

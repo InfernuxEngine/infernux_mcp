@@ -1,2 +1,4 @@
 mcp>=1.29,<1.30
-fastmcp>=3.4,<3.5
+fastmcp[tasks]>=3.4,<3.5
+PyYAML>=6
+watchfiles>=1,<2
